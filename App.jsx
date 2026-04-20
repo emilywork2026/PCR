@@ -98,6 +98,8 @@ export default function App() {
       if (docSnap.exists()) {
         setMyRates(docSnap.data().rates || {});
       }
+    }, (err) => {
+      console.error("Rates fetch error:", err);
     });
 
     return () => {
@@ -106,6 +108,7 @@ export default function App() {
     };
   }, [user]);
 
+  // Robust Native CSV Parser (Replaces need for PapaParse)
   const parseCSV = (text) => {
     const lines = text.split(/\r?\n/).filter(l => l.trim());
     if (lines.length < 2) return [];
@@ -116,13 +119,21 @@ export default function App() {
       let inQuotes = false;
       for (let i = 0; i < line.length; i++) {
         const c = line[i];
-        if (c === '"') inQuotes = !inQuotes;
-        else if (c === ',' && !inQuotes) {
-          fields.push(cur.trim().replace(/^"|$/g, ''));
+        if (c === '"') {
+            if (inQuotes && line[i+1] === '"') { // Handle escaped quotes ""
+                cur += '"';
+                i++;
+            } else {
+                inQuotes = !inQuotes;
+            }
+        } else if (c === ',' && !inQuotes) {
+          fields.push(cur.trim());
           cur = "";
-        } else cur += c;
+        } else {
+            cur += c;
+        }
       }
-      fields.push(cur.trim().replace(/^"|$/g, ''));
+      fields.push(cur.trim());
       return fields;
     };
 
@@ -150,7 +161,6 @@ export default function App() {
           const vendor = title.match(/from (.*?) at/)?.[1] || 'Unknown';
           const link = row['_container_link'] || "";
           
-          // Logic to detect location from CSV link or description
           let location = "Market Generic";
           const rawLoc = link.match(/locn=(.*?)&/)?.[1];
           if (rawLoc) {
@@ -234,6 +244,23 @@ export default function App() {
       .slice(0, 8);
   }, [filteredMarket]);
 
+  const handleSave = async () => {
+    if (!user) return;
+    setSaving(true);
+    try {
+        const ratesDoc = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'current_rates');
+        await setDoc(ratesDoc, { 
+            rates: myRates,
+            lastUpdated: new Date().toISOString()
+        }, { merge: true });
+    } catch (err) {
+        console.error("Save error:", err);
+        setErrorMsg("Failed to save rates to cloud.");
+    } finally {
+        setTimeout(() => setSaving(false), 800);
+    }
+  };
+
   if (loading && firebaseConfig.apiKey !== "preview") {
     return (
       <div className="min-h-screen bg-[#0f121d] flex items-center justify-center">
@@ -268,9 +295,15 @@ export default function App() {
 
       <main className="max-w-[1400px] mx-auto p-6 space-y-6">
         
+        {errorMsg && (
+            <div className="bg-red-500/10 border border-red-500/50 p-4 rounded-xl flex items-center gap-3 text-red-500 text-sm">
+                <AlertCircle size={18} />
+                {errorMsg}
+            </div>
+        )}
+
         {/* Top Status Cards */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-          {/* Price Strategy Card with Location Selector */}
           <div className="bg-[#1c2237] rounded-2xl p-6 border border-slate-800/50 shadow-sm">
             <div className="flex items-center gap-2 mb-6">
               <Settings size={14} className="text-indigo-400" />
@@ -314,7 +347,6 @@ export default function App() {
             </div>
           </div>
 
-          {/* Avg Market Rate */}
           <div className="bg-[#1c2237] rounded-2xl p-6 border border-slate-800/50 shadow-sm relative overflow-hidden">
              <h3 className="text-xs font-bold text-slate-500 mb-4">Avg Market Rate</h3>
              <div className="text-3xl font-bold text-white">
@@ -323,7 +355,6 @@ export default function App() {
              <div className="absolute bottom-0 left-0 w-full h-1 bg-blue-500/20"></div>
           </div>
 
-          {/* Market Floor */}
           <div className="bg-[#1c2237] rounded-2xl p-6 border border-slate-800/50 shadow-sm relative overflow-hidden">
              <h3 className="text-xs font-bold text-slate-500 mb-4">Market Floor</h3>
              <div className="text-3xl font-bold text-white">
@@ -334,7 +365,6 @@ export default function App() {
              </div>
           </div>
 
-          {/* Required Updates */}
           <div className="bg-[#1c2237] rounded-2xl p-6 border border-yellow-500/30 shadow-sm relative border-t-4 border-t-yellow-500">
              <h3 className="text-xs font-bold text-slate-500 mb-4">Required Updates</h3>
              <div className="text-5xl font-bold text-yellow-500">
@@ -343,7 +373,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* Mid Section Graphs */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <div className="bg-[#1c2237] rounded-2xl p-6 border border-slate-800/50 min-h-[300px]">
              <h3 className="text-sm font-bold text-white mb-6">Category Comparison & Recommended Rates</h3>
@@ -392,7 +421,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* Workflow Section */}
         <div className="space-y-4">
           <div className="flex justify-between items-center">
             <div>
@@ -400,7 +428,7 @@ export default function App() {
               <p className="text-xs text-slate-500">Currently viewing: <span className="text-indigo-400 font-bold">{selectedLocation}</span></p>
             </div>
             <select 
-               className="bg-[#1c2237] border border-slate-700 text-xs p-2 rounded-lg outline-none font-medium"
+               className="bg-[#1c2237] border border-slate-700 text-xs p-2 rounded-lg outline-none font-medium text-white"
                value={fleetFilter}
                onChange={(e) => setFleetFilter(e.target.value)}
             >
@@ -480,14 +508,11 @@ export default function App() {
           </div>
         </div>
 
-        {/* Global Save */}
         <div className="flex justify-end pt-4">
            <button 
-            onClick={() => {
-              setSaving(true);
-              setTimeout(() => setSaving(false), 800);
-            }}
-            className="bg-indigo-600 hover:bg-indigo-500 text-white px-8 py-3 rounded-xl font-bold text-sm shadow-xl shadow-indigo-500/20 flex items-center gap-2"
+            onClick={handleSave}
+            disabled={saving || !user}
+            className="bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-700 text-white px-8 py-3 rounded-xl font-bold text-sm shadow-xl shadow-indigo-500/20 flex items-center gap-2 transition-all"
            >
              {saving ? <RefreshCw className="animate-spin" size={16} /> : <Save size={16} />}
              Confirm All Adjustments
