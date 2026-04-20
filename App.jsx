@@ -17,10 +17,30 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
   AreaChart, Area
 } from 'recharts';
-import { Upload, TrendingUp, DollarSign, CheckCircle, Activity, MapPin, Truck, Download } from 'lucide-react';
+import { Upload, TrendingUp, DollarSign, CheckCircle, Activity, MapPin, Truck, Download, AlertCircle } from 'lucide-react';
 
-// --- Firebase Configuration ---
-const firebaseConfig = JSON.parse(__firebase_config);
+// --- Safe Configuration Handling ---
+const getSafeConfig = () => {
+  try {
+    // Attempt to use environment variables if present
+    const config = typeof __firebase_config !== 'undefined' 
+      ? JSON.parse(__firebase_config) 
+      : JSON.parse(import.meta.env?.VITE_FIREBASE_CONFIG || '{}');
+    return config;
+  } catch (e) {
+    console.warn("Firebase config not found. Using placeholder for UI preview.");
+    return {
+      apiKey: "placeholder",
+      authDomain: "placeholder",
+      projectId: "placeholder",
+      storageBucket: "placeholder",
+      messagingSenderId: "placeholder",
+      appId: "placeholder"
+    };
+  }
+};
+
+const firebaseConfig = getSafeConfig();
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
@@ -34,6 +54,7 @@ export default function App() {
   const [strategy, setStrategy] = useState('undercut_min');
   const [offset, setOffset] = useState(2);
   const [loading, setLoading] = useState(true);
+  const [errorMsg, setErrorMsg] = useState(null);
   
   // Filter States
   const [selectedLocation, setSelectedLocation] = useState('All Locations');
@@ -81,22 +102,50 @@ export default function App() {
     return parseFloat(cleaned) || 0;
   };
 
+  // REPLACED: Custom CSV Parser to avoid "Papa is not defined" error
   const parseCSV = (text) => {
-    const lines = text.split(/\r?\n/);
-    if (lines.length < 2) return [];
-    const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, ''));
-    
-    return lines.slice(1).map(line => {
-      const values = line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(v => v.trim().replace(/^"|"$/g, ''));
-      const row = {};
-      headers.forEach((header, i) => {
-        row[header] = values[i];
+    try {
+      const lines = text.split(/\r?\n/).filter(line => line.trim() !== "");
+      if (lines.length < 2) return [];
+
+      // Handle quoted CSV values correctly
+      const splitLine = (line) => {
+        const result = [];
+        let cur = "";
+        let inQuotes = false;
+        for (let i = 0; i < line.length; i++) {
+          const char = line[i];
+          if (char === '"') {
+            inQuotes = !inQuotes;
+          } else if (char === ',' && !inQuotes) {
+            result.push(cur.trim());
+            cur = "";
+          } else {
+            cur += char;
+          }
+        }
+        result.push(cur.trim());
+        return result.map(v => v.replace(/^"|"$/g, ''));
+      };
+
+      const headers = splitLine(lines[0]);
+      return lines.slice(1).map(line => {
+        const values = splitLine(line);
+        const row = {};
+        headers.forEach((header, i) => {
+          row[header] = values[i] || "";
+        });
+        return row;
       });
-      return row;
-    });
+    } catch (e) {
+      console.error("Parse Error", e);
+      setErrorMsg("Failed to parse CSV format.");
+      return [];
+    }
   };
 
   const handleFileUpload = (e) => {
+    setErrorMsg(null);
     const file = e.target.files[0];
     if (!file) return;
 
@@ -105,22 +154,29 @@ export default function App() {
       const text = event.target.result;
       const results = parseCSV(text);
       
+      if (results.length === 0) {
+        setErrorMsg("No data found in CSV.");
+        return;
+      }
+
       const parsed = results.map(row => {
         const title = row['title'] || row['is-visually-hidden'] || '';
         const vendorMatch = title.match(/from (.*?) at/);
         const vendor = vendorMatch ? vendorMatch[1] : 'Unknown Provider';
         
-        const locMatch = (row['_container_link'] || "").match(/locn=(.*?)&/);
+        const link = row['_container_link'] || "";
+        const locMatch = link.match(/locn=(.*?)&/);
         const location = locMatch ? decodeURIComponent(locMatch[1]).replace(/\+/g, ' ') : "Market Generic";
 
-        const priceRaw = row['uitk-text_10'] || row['uitk-text_8'] || row['uitk-text_7'];
+        // Try multiple common Expedia Scraper headers
+        const priceRaw = row['uitk-text_10'] || row['uitk-text_8'] || row['uitk-text_7'] || row['price'];
         const price = cleanPrice(priceRaw);
         
         return {
-          category: row['uitk-heading-5'] || 'Other',
+          category: row['uitk-heading-5'] || row['category'] || 'Other',
           vendor: vendor,
           price: price,
-          model: row['uitk-text'] || 'Similar Model',
+          model: row['uitk-text'] || row['model'] || 'Similar Model',
           location: location
         };
       }).filter(i => i.price > 0);
@@ -131,13 +187,15 @@ export default function App() {
         if (fleetFilter.length === 0) {
           setFleetFilter([...new Set(parsed.map(p => p.category))]);
         }
+      } else {
+        setErrorMsg("CSV format recognized but no valid prices extracted. Check headers.");
       }
     };
     reader.readAsText(file);
   };
 
   const saveToHistory = async (data) => {
-    if (!user) return;
+    if (!user || firebaseConfig.apiKey === "placeholder") return;
     const dateKey = new Date().toISOString().split('T')[0];
     const categories = [...new Set(data.map(d => d.category))];
     
@@ -229,7 +287,7 @@ export default function App() {
     document.body.removeChild(a);
   };
 
-  if (loading) return (
+  if (loading && firebaseConfig.apiKey !== "placeholder") return (
     <div className="min-h-screen bg-slate-950 flex items-center justify-center font-sans text-white">
       <div className="text-center space-y-4">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-500 mx-auto"></div>
@@ -242,6 +300,14 @@ export default function App() {
     <div className="min-h-screen bg-slate-950 text-slate-100 p-4 md:p-8 font-sans">
       <div className="max-w-7xl mx-auto space-y-8">
         
+        {errorMsg && (
+          <div className="bg-red-500/10 border border-red-500/50 p-4 rounded-2xl flex items-center gap-3 text-red-400 animate-in fade-in slide-in-from-top-4">
+            <AlertCircle size={20} />
+            <span className="text-sm font-bold">{errorMsg}</span>
+            <button onClick={() => setErrorMsg(null)} className="ml-auto text-xs underline">Dismiss</button>
+          </div>
+        )}
+
         <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 border-b border-slate-800 pb-8">
           <div>
             <div className="flex items-center gap-3 mb-1">
@@ -252,7 +318,7 @@ export default function App() {
             </div>
             <p className="text-slate-400 text-sm flex items-center gap-2">
               <MapPin size={14} className="text-indigo-400" /> 
-              {selectedLocation} • {activeCategories.length} Active Fleet Categories
+              {selectedLocation} • {activeCategories.length} Active Categories
             </p>
           </div>
           <div className="flex gap-3 w-full md:w-auto">
@@ -389,6 +455,15 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/50">
+                    {activeCategories.length === 0 && (
+                      <tr>
+                        <td colSpan="5" className="p-20 text-center text-slate-500">
+                          <Upload className="mx-auto mb-4 opacity-20" size={48} />
+                          <p className="text-sm font-bold">No market data imported.</p>
+                          <p className="text-xs">Upload an Expedia CSV to begin analysis.</p>
+                        </td>
+                      </tr>
+                    )}
                     {activeCategories.map(cat => {
                       const group = filteredMarket.filter(d => d.category === cat);
                       const avg = group.reduce((a,b)=>a+b.price,0)/group.length;
