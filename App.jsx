@@ -1,398 +1,333 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { initializeApp } from 'firebase/app';
-import { 
-  getFirestore, 
-  doc, 
-  setDoc, 
-  onSnapshot 
-} from 'firebase/firestore';
-import { 
-  getAuth, 
-  signInAnonymously, 
-  signInWithCustomToken, 
-  onAuthStateChanged 
-} from 'firebase/auth';
-import { 
-  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
-  BarChart, Bar, Cell
-} from 'recharts';
-import { 
-  Upload, AlertCircle, Save, 
-  RefreshCw, Settings, PlusCircle, TrendingDown, Info,
-  ChevronRight, BarChart3, ListFilter
-} from 'lucide-react';
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rate Management Console - Expedia Intelligence</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/papaparse/5.3.2/papaparse.min.js"></script>
+    <style>
+        .card { background: rgba(255, 255, 255, 0.05); backdrop-filter: blur(10px); border: 1px solid rgba(255, 255, 255, 0.1); }
+        .input-field { background: #1e293b; border: 1px solid #334155; color: white; padding: 0.5rem; border-radius: 0.5rem; outline: none; }
+        .input-field:focus { border-color: #3b82f6; }
+    </style>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen font-sans">
 
-// --- Firebase Initialization ---
-const getSafeConfig = () => {
-  try {
-    if (typeof __firebase_config !== 'undefined' && __firebase_config) return JSON.parse(__firebase_config);
-    return { apiKey: "preview", projectId: "preview" };
-  } catch (e) {
-    return { apiKey: "preview", projectId: "preview" };
-  }
-};
-
-const firebaseConfig = getSafeConfig();
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'expedia-price-manager';
-
-export default function App() {
-  const [user, setUser] = useState(null);
-  const [currentMarket, setCurrentMarket] = useState([]);
-  const [myRates, setMyRates] = useState({});
-  const [strategy, setStrategy] = useState('undercut_min');
-  const [offset, setOffset] = useState(2);
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [errorMsg, setErrorMsg] = useState(null);
-
-  // Authentication & Real-time Data Sync
-  useEffect(() => {
-    const initAuth = async () => {
-      try {
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
-        } else {
-          await signInAnonymously(auth);
-        }
-      } catch (err) {
-        console.error("Auth error:", err);
-      }
-    };
-    initAuth();
-    const unsubscribe = onAuthStateChanged(auth, (u) => {
-      setUser(u);
-      setLoading(false);
-    });
-    return () => unsubscribe();
-  }, []);
-
-  useEffect(() => {
-    if (!user || firebaseConfig.apiKey === "preview") return;
-    const ratesDoc = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'current_rates');
-    const unsub = onSnapshot(ratesDoc, (snap) => {
-      if (snap.exists()) setMyRates(snap.data().rates || {});
-    }, (err) => console.error("Firestore error:", err));
-    return () => unsub();
-  }, [user]);
-
-  // --- Native CSV Parser ---
-  const parseCSV = (text) => {
-    const lines = text.split(/\r?\n/).filter(line => line.trim().length > 0);
-    if (lines.length < 2) return [];
-
-    const splitLine = (line) => {
-      const result = [];
-      let currentField = '';
-      let insideQuotes = false;
-      for (let i = 0; i < line.length; i++) {
-        const char = line[i];
-        if (char === '"') {
-          if (insideQuotes && line[i + 1] === '"') { currentField += '"'; i++; } 
-          else { insideQuotes = !insideQuotes; }
-        } else if (char === ',' && !insideQuotes) {
-          result.push(currentField.trim());
-          currentField = '';
-        } else { currentField += char; }
-      }
-      result.push(currentField.trim());
-      return result;
-    };
-
-    const headers = splitLine(lines[0]);
-    return lines.slice(1).map(line => {
-      const values = splitLine(line);
-      return headers.reduce((obj, h, i) => {
-        obj[h] = values[i] || "";
-        return obj;
-      }, {});
-    });
-  };
-
-  const handleFileUpload = (e) => {
-    setErrorMsg(null);
-    const file = e.target.files[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      try {
-        const results = parseCSV(event.target.result);
-        const parsed = results.map(row => {
-          const priceRaw = row['uitk-text_10'] || row['uitk-text_8'] || row['price'] || "0";
-          const category = row['uitk-heading-5'] || row['category'] || 'Other';
-          const model = row['uitk-text'] || row['title'] || 'Similar Model';
-          
-          return {
-            category,
-            price: parseFloat(priceRaw.replace(/[^0-9.]/g, '')) || 0,
-            model,
-            location: row['location'] || "Market Generic"
-          };
-        }).filter(item => item.price > 0);
-
-        if (parsed.length > 0) {
-          setCurrentMarket(parsed);
-        } else {
-          setErrorMsg("No valid pricing data found in CSV.");
-        }
-      } catch (err) {
-        setErrorMsg("Failed to parse CSV file.");
-      }
-    };
-    reader.readAsText(file);
-  };
-
-  const calculateTarget = (min, avg) => {
-    switch(strategy) {
-      case 'undercut_min': return Math.max(1, min - offset);
-      case 'match_min': return min;
-      case 'undercut_avg': return Math.max(1, avg - offset);
-      case 'premium': return avg + offset;
-      default: return avg;
-    }
-  };
-
-  const stats = useMemo(() => {
-    if (currentMarket.length === 0) return { avg: 0, min: 0, count: 0 };
-    const prices = currentMarket.map(i => i.price);
-    return {
-      avg: Math.round(prices.reduce((a,b) => a+b, 0) / prices.length),
-      min: Math.min(...prices),
-      count: currentMarket.length
-    };
-  }, [currentMarket]);
-
-  const categories = useMemo(() => {
-    return Array.from(new Set(currentMarket.map(i => i.category)));
-  }, [currentMarket]);
-
-  const handleSave = async () => {
-    if (!user || firebaseConfig.apiKey === "preview") {
-      setErrorMsg("Saving is disabled in preview mode.");
-      return;
-    }
-    setSaving(true);
-    try {
-      const ratesDoc = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'current_rates');
-      await setDoc(ratesDoc, { rates: myRates, updated: new Date().toISOString() }, { merge: true });
-    } catch (err) {
-      setErrorMsg("Failed to sync to cloud.");
-    } finally {
-      setTimeout(() => setSaving(false), 500);
-    }
-  };
-
-  if (loading) return <div className="min-h-screen bg-slate-950 flex items-center justify-center text-indigo-500"><RefreshCw className="animate-spin" /></div>;
-
-  return (
-    <div className="min-h-screen bg-[#020617] text-slate-300 font-sans">
-      <header className="border-b border-slate-800/60 bg-slate-950/80 backdrop-blur-xl sticky top-0 z-50 px-8 py-5 flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <div className="w-12 h-12 bg-indigo-600 rounded-2xl flex items-center justify-center shadow-2xl shadow-indigo-500/20">
-            <BarChart3 className="text-white" size={24} />
-          </div>
-          <div>
-            <h1 className="text-xl font-black text-white tracking-tighter uppercase">Expedia Pro</h1>
-            <div className="flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-              <span className="text-[10px] text-slate-500 uppercase font-bold tracking-widest">Market Intelligence Active</span>
-            </div>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-4">
-          <label className="flex items-center gap-2 bg-white text-black hover:bg-slate-200 px-5 py-3 rounded-2xl text-xs font-black uppercase transition-all cursor-pointer shadow-lg shadow-white/5">
-            <PlusCircle size={16} />
-            Import Feed
-            <input type="file" className="hidden" onChange={handleFileUpload} accept=".csv" />
-          </label>
-          <button 
-            onClick={handleSave}
-            disabled={saving}
-            className="bg-slate-800 hover:bg-slate-700 text-white px-5 py-3 rounded-2xl text-xs font-black uppercase flex items-center gap-2 border border-slate-700 transition-all"
-          >
-            {saving ? <RefreshCw className="animate-spin" size={16} /> : <Save size={16} />}
-            {saving ? 'Syncing...' : 'Sync Cloud'}
-          </button>
-        </div>
-      </header>
-
-      <main className="max-w-[1400px] mx-auto p-8 space-y-8">
-        {errorMsg && (
-          <div className="bg-rose-500/10 border border-rose-500/20 p-4 rounded-2xl flex items-center gap-3 text-rose-400 text-sm font-medium">
-            <AlertCircle size={18} /> {errorMsg}
-          </div>
-        )}
-
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-          <div className="bg-slate-900/50 p-6 rounded-[2rem] border border-slate-800/60">
-            <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-4">Market Floor</p>
-            <h4 className="text-4xl font-black text-white">CA${stats.min}</h4>
-            <div className="mt-2 flex items-center gap-1 text-emerald-400 text-[10px] font-bold">
-              <TrendingDown size={12} /> Competitive Baseline
-            </div>
-          </div>
-          <div className="bg-slate-900/50 p-6 rounded-[2rem] border border-slate-800/60">
-            <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-4">Average Rate</p>
-            <h4 className="text-4xl font-black text-white">CA${stats.avg}</h4>
-            <p className="mt-2 text-slate-500 text-[10px] font-bold">Industry Mean</p>
-          </div>
-          <div className="md:col-span-2 bg-indigo-600 rounded-[2rem] p-6 text-white flex justify-between items-center relative overflow-hidden shadow-2xl shadow-indigo-600/20">
-            <div className="relative z-10">
-              <p className="text-[10px] font-black uppercase tracking-widest opacity-70 mb-4">Pricing Strategy</p>
-              <div className="flex items-center gap-4">
-                <select 
-                  value={strategy}
-                  onChange={(e) => setStrategy(e.target.value)}
-                  className="bg-indigo-700/50 border-none rounded-xl px-4 py-3 text-sm font-black text-white outline-none"
-                >
-                  <option value="undercut_min">Undercut Floor</option>
-                  <option value="match_min">Match Floor</option>
-                  <option value="undercut_avg">Undercut Avg</option>
-                </select>
-                <div className="flex items-center bg-indigo-700/50 rounded-xl px-4 py-3">
-                  <span className="text-xs font-bold mr-2">Offset:</span>
-                  <input 
-                    type="number" 
-                    value={offset} 
-                    onChange={e => setOffset(Number(e.target.value))}
-                    className="bg-transparent w-12 text-sm font-black outline-none"
-                  />
+    <!-- Header -->
+    <nav class="border-b border-slate-800 p-4 sticky top-0 bg-slate-900/80 backdrop-blur-md z-50">
+        <div class="max-w-7xl mx-auto flex justify-between items-center">
+            <div class="flex items-center gap-3">
+                <div class="p-2 bg-indigo-600 rounded-lg">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
                 </div>
-              </div>
+                <div>
+                    <h1 class="text-xl font-bold tracking-tight">Rate Management Console</h1>
+                    <p class="text-xs text-slate-400">Competitive Price Positioning</p>
+                </div>
             </div>
-            <Settings className="absolute -right-4 -bottom-4 text-white/10" size={120} />
-          </div>
+            <div class="flex gap-4 items-center">
+                <input type="file" id="csvUpload" class="hidden" accept=".csv">
+                <button onclick="document.getElementById('csvUpload').click()" class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded-lg font-medium transition-all text-sm flex items-center gap-2">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
+                    Import Market Data
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <main class="max-w-7xl mx-auto p-6 space-y-8">
+        
+        <!-- Rate Strategy Panel -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div class="lg:col-span-1 card p-6 rounded-2xl border-l-4 border-l-indigo-500">
+                <h2 class="text-lg font-bold mb-4 flex items-center gap-2">
+                    <svg class="w-5 h-5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path></svg>
+                    Price Strategy
+                </h2>
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-sm text-slate-400 mb-1">Positioning Logic</label>
+                        <select id="strategySelect" onchange="updateDashboard()" class="w-full input-field">
+                            <option value="undercut_min">Undercut Market Minimum</option>
+                            <option value="match_min">Match Market Minimum</option>
+                            <option value="undercut_avg">Undercut Market Average</option>
+                            <option value="premium">Premium (+5% Over Average)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm text-slate-400 mb-1">Offset Amount (CA$)</label>
+                        <!-- Added step and fixed default value to prevent parsing warnings -->
+                        <input type="number" id="strategyOffset" value="2" step="1" oninput="updateDashboard()" class="w-full input-field">
+                    </div>
+                </div>
+            </div>
+
+            <div class="lg:col-span-2 grid grid-cols-1 md:grid-cols-3 gap-4" id="statsContainer">
+                <div class="card p-6 rounded-2xl">
+                    <p class="text-slate-400 text-sm mb-1">Avg Market Rate</p>
+                    <h3 class="text-3xl font-bold" id="avgPrice">-</h3>
+                </div>
+                <div class="card p-6 rounded-2xl">
+                    <p class="text-slate-400 text-sm mb-1">Market Floor</p>
+                    <h3 class="text-3xl font-bold text-emerald-400" id="minPrice">-</h3>
+                </div>
+                <div class="card p-6 rounded-2xl border-t-4 border-t-yellow-500">
+                    <p class="text-slate-400 text-sm mb-1">Required Updates</p>
+                    <h3 class="text-3xl font-bold text-yellow-400" id="alertCount">0</h3>
+                </div>
+            </div>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          <div className="lg:col-span-2 space-y-4">
-            <div className="flex items-center justify-between px-2">
-              <h3 className="text-sm font-black uppercase tracking-widest text-white flex items-center gap-2">
-                <ListFilter size={16} className="text-indigo-500" />
-                Category Breakdown
-              </h3>
-              <p className="text-[10px] font-bold text-slate-500">{categories.length} Categories Found</p>
+        <!-- Charts Row -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div class="card p-6 rounded-2xl">
+                <h2 class="text-lg font-semibold mb-4 text-slate-300">Category Comparison & Recommended Rates</h2>
+                <canvas id="categoryChart" height="200"></canvas>
+            </div>
+            <div class="card p-6 rounded-2xl overflow-hidden">
+                <h2 class="text-lg font-semibold mb-4 text-slate-300">Competitor Volume</h2>
+                <canvas id="distributionChart" height="200"></canvas>
+            </div>
+        </div>
+
+        <!-- Set Up Rates Table -->
+        <div class="space-y-4">
+            <div class="flex justify-between items-end">
+                <div>
+                    <h2 class="text-2xl font-bold">Rate Adjustment Workflow</h2>
+                    <p class="text-slate-400 text-sm">Compare current rates against market targets to set daily prices.</p>
+                </div>
+                <div class="flex gap-2">
+                    <select id="filterCategory" onchange="renderTable()" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1 text-sm outline-none">
+                        <option value="all">All Categories</option>
+                    </select>
+                </div>
             </div>
 
-            {categories.map(cat => {
-              const items = currentMarket.filter(i => i.category === cat);
-              const min = Math.min(...items.map(i => i.price));
-              const avg = items.reduce((a,b) => a+b.price, 0) / items.length;
-              const target = calculateTarget(min, avg);
-              const current = myRates[cat] || 0;
+            <div class="overflow-x-auto rounded-2xl border border-slate-800">
+                <table class="w-full text-left border-collapse">
+                    <thead class="bg-slate-800 text-slate-400 text-sm uppercase tracking-wider">
+                        <tr>
+                            <th class="p-4 font-medium">Category</th>
+                            <th class="p-4 font-medium">Market Average</th>
+                            <th class="p-4 font-medium">Market Min</th>
+                            <th class="p-4 font-medium">Our Current Rate</th>
+                            <th class="p-4 font-medium">Target Rate</th>
+                            <th class="p-4 font-medium text-right">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="rateTableBody">
+                        <tr>
+                            <td colspan="6" class="p-12 text-center text-slate-500 italic">
+                                <p class="text-lg">No Data Available</p>
+                                <p class="text-sm">Please upload a CSV export from Expedia to see market rates.</p>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </main>
 
-              return (
-                <div key={cat} className="bg-slate-900/40 border border-slate-800/60 p-6 rounded-[2rem] hover:border-indigo-500/40 transition-all group">
-                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
-                    <div className="flex-1">
-                      <p className="text-[10px] font-black text-indigo-400 uppercase tracking-widest mb-1">{cat}</p>
-                      <h4 className="text-xl font-bold text-white group-hover:text-indigo-300 transition-colors">{items[0].model}</h4>
-                      <div className="flex gap-4 mt-2">
-                         <span className="text-[10px] font-bold text-slate-500">Market Min: <span className="text-slate-300">${min}</span></span>
-                         <span className="text-[10px] font-bold text-slate-500">Market Avg: <span className="text-slate-300">${avg.toFixed(0)}</span></span>
-                      </div>
-                    </div>
+    <script>
+        let marketData = [];
+        let myRates = {}; 
+        let charts = {};
+
+        // Added event listener to ensure script waits for DOM
+        window.onload = function() {
+            document.getElementById('csvUpload').addEventListener('change', function(e) {
+                const file = e.target.files[0];
+                if (!file) return;
+
+                Papa.parse(file, {
+                    header: true,
+                    skipEmptyLines: true,
+                    complete: function(results) {
+                        processData(results.data);
+                    }
+                });
+            });
+        };
+
+        function cleanPrice(priceStr) {
+            if (!priceStr) return 0;
+            return parseFloat(priceStr.replace(/[^0-9.]/g, '')) || 0;
+        }
+
+        function processData(data) {
+            marketData = data.map(row => {
+                const title = row['title'] || row['is-visually-hidden'] || '';
+                const vendorMatch = title.match(/from (.*?) at/);
+                const vendor = vendorMatch ? vendorMatch[1] : 'Unknown';
+                const price = cleanPrice(row['uitk-text_10'] || row['uitk-text_8']);
+                
+                return {
+                    category: row['uitk-heading-5'] || 'Other',
+                    vendor: vendor,
+                    price: price
+                };
+            }).filter(item => item.price > 0);
+
+            const categories = [...new Set(marketData.map(d => d.category))];
+            categories.forEach(cat => {
+                if (!myRates[cat]) myRates[cat] = 0;
+            });
+
+            updateDashboard();
+        }
+
+        function calculateTarget(catMin, catAvg) {
+            const strategy = document.getElementById('strategySelect').value;
+            const offsetInput = document.getElementById('strategyOffset');
+            const offset = parseFloat(offsetInput.value) || 0;
+            
+            switch(strategy) {
+                case 'undercut_min': return Math.max(1, catMin - offset);
+                case 'match_min': return catMin;
+                case 'undercut_avg': return Math.max(1, catAvg - offset);
+                case 'premium': return catAvg * 1.05;
+                default: return catAvg;
+            }
+        }
+
+        function updateMyRate(category, val) {
+            myRates[category] = parseFloat(val) || 0;
+            renderTable();
+            renderCharts(); 
+        }
+
+        function updateDashboard() {
+            if (marketData.length === 0) return;
+
+            const prices = marketData.map(d => d.price);
+            const avg = prices.reduce((a, b) => a + b, 0) / prices.length;
+            const min = Math.min(...prices);
+
+            document.getElementById('avgPrice').innerText = `CA $${avg.toFixed(0)}`;
+            document.getElementById('minPrice').innerText = `CA $${min.toFixed(0)}`;
+
+            const categories = [...new Set(marketData.map(d => d.category))];
+            const filter = document.getElementById('filterCategory');
+            const currentFilter = filter.value;
+            filter.innerHTML = '<option value="all">All Categories</option>' + 
+                categories.map(c => `<option value="${c}">${c}</option>`).join('');
+            filter.value = currentFilter || 'all';
+
+            renderCharts();
+            renderTable();
+        }
+
+        function renderCharts() {
+            const ctx1 = document.getElementById('categoryChart').getContext('2d');
+            const ctx2 = document.getElementById('distributionChart').getContext('2d');
+
+            if (charts.cat) charts.cat.destroy();
+            if (charts.dist) charts.dist.destroy();
+
+            const categories = [...new Set(marketData.map(d => d.category))];
+            const avgData = categories.map(cat => {
+                const vals = marketData.filter(d => d.category === cat).map(d => d.price);
+                return vals.reduce((a,b)=>a+b,0)/vals.length;
+            });
+
+            const targetData = categories.map(cat => {
+                const vals = marketData.filter(d => d.category === cat).map(d => d.price);
+                const min = Math.min(...vals);
+                const avg = vals.reduce((a,b)=>a+b,0)/vals.length;
+                return calculateTarget(min, avg);
+            });
+
+            charts.cat = new Chart(ctx1, {
+                type: 'bar',
+                data: {
+                    labels: categories,
+                    datasets: [
+                        { label: 'Market Average', data: avgData, backgroundColor: '#334155' },
+                        { label: 'Recommended Rate', data: targetData, backgroundColor: '#6366f1' }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    plugins: { legend: { labels: { color: '#94a3b8' } } },
+                    scales: { 
+                        y: { grid: { color: '#1e293b' }, ticks: { color: '#94a3b8' } },
+                        x: { ticks: { color: '#94a3b8' } }
+                    }
+                }
+            });
+
+            const vendorCounts = {};
+            marketData.forEach(d => vendorCounts[d.vendor] = (vendorCounts[d.vendor] || 0) + 1);
+            
+            charts.dist = new Chart(ctx2, {
+                type: 'doughnut',
+                data: {
+                    labels: Object.keys(vendorCounts),
+                    datasets: [{
+                        data: Object.values(vendorCounts),
+                        backgroundColor: ['#6366f1', '#8b5cf6', '#ec4899', '#f59e0b', '#10b981'],
+                        borderWidth: 0
+                    }]
+                },
+                options: { plugins: { legend: { position: 'right', labels: { color: '#94a3b8' } } } }
+            });
+        }
+
+        function renderTable() {
+            const tbody = document.getElementById('rateTableBody');
+            const filterVal = document.getElementById('filterCategory').value;
+            const categories = [...new Set(marketData.map(d => d.category))];
+            
+            let updateAlerts = 0;
+
+            const html = categories
+                .filter(cat => filterVal === 'all' || cat === filterVal)
+                .map(cat => {
+                    const group = marketData.filter(d => d.category === cat);
+                    const avg = group.reduce((a,b)=>a+b.price,0)/group.length;
+                    const min = Math.min(...group.map(d => d.price));
+                    const target = calculateTarget(min, avg);
+                    const current = myRates[cat] || 0;
                     
-                    <div className="flex items-center gap-4">
-                      <div className="text-right">
-                        <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Target</p>
-                        <p className="text-2xl font-black text-emerald-400">CA${target.toFixed(0)}</p>
-                      </div>
-                      <ChevronRight className="text-slate-700" />
-                      <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800">
-                        <p className="text-[10px] font-black text-indigo-400 uppercase mb-2">Live Rate</p>
-                        <div className="relative flex items-center">
-                          <span className="absolute left-3 text-xs text-slate-600 font-bold">$</span>
-                          <input 
-                            type="number"
-                            value={current || ''}
-                            onChange={(e) => setMyRates({...myRates, [cat]: parseFloat(e.target.value)})}
-                            className="bg-slate-900 border border-slate-800 rounded-xl pl-6 pr-3 py-2 text-sm font-black text-white w-24 focus:border-indigo-500 outline-none transition-all"
-                            placeholder="0"
-                          />
-                        </div>
-                      </div>
-                      <button 
-                        onClick={() => setMyRates({...myRates, [cat]: target})}
-                        className="bg-indigo-600 hover:bg-indigo-500 text-white p-3 rounded-xl transition-all"
-                      >
-                        <RefreshCw size={16} />
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
+                    const isOutOfPosition = current > target;
+                    if (isOutOfPosition) updateAlerts++;
 
-            {categories.length === 0 && (
-              <div className="bg-slate-900/20 border-2 border-dashed border-slate-800/60 rounded-[3rem] py-32 text-center">
-                <Upload className="mx-auto text-slate-700 mb-4" size={48} />
-                <p className="text-sm font-bold text-slate-500 uppercase tracking-widest">Awaiting CSV Data Feed</p>
-              </div>
-            )}
-          </div>
+                    return `
+                        <tr class="border-b border-slate-800 hover:bg-slate-800/30 transition-colors">
+                            <td class="p-4 font-bold text-slate-200">${cat}</td>
+                            <td class="p-4 text-slate-400 font-mono">CA$${avg.toFixed(2)}</td>
+                            <td class="p-4 text-emerald-400 font-mono font-bold">CA$${min.toFixed(2)}</td>
+                            <td class="p-4">
+                                <div class="relative">
+                                    <span class="absolute left-3 top-2 text-slate-500">CA$</span>
+                                    <input type="number" 
+                                           value="${current || ''}" 
+                                           placeholder="Set Rate"
+                                           onchange="updateMyRate('${cat}', this.value)"
+                                           class="w-32 bg-slate-800 border ${isOutOfPosition ? 'border-yellow-500' : 'border-slate-700'} rounded px-9 py-2 text-white text-sm outline-none focus:border-indigo-500">
+                                </div>
+                            </td>
+                            <td class="p-4">
+                                <div class="flex flex-col">
+                                    <span class="text-indigo-400 font-mono font-bold text-lg">CA$${target.toFixed(2)}</span>
+                                    <span class="text-[10px] text-slate-500 uppercase">Target Price</span>
+                                </div>
+                            </td>
+                            <td class="p-4 text-right">
+                                ${isOutOfPosition ? 
+                                    `<button onclick="updateMyRate('${cat}', ${target.toFixed(2)})" class="bg-yellow-500/10 text-yellow-500 px-3 py-1 rounded text-xs border border-yellow-500/20 hover:bg-yellow-500 hover:text-slate-900 font-bold transition-all">Match Target</button>` 
+                                    : `<span class="text-emerald-500 flex items-center justify-end gap-1 text-xs font-bold uppercase"><svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path></svg> Optimized</span>`}
+                            </td>
+                        </tr>
+                    `;
+                }).join('');
 
-          <div className="space-y-6">
-            <div className="bg-slate-900/50 p-8 rounded-[2.5rem] border border-slate-800/60 shadow-2xl">
-              <h3 className="text-xs font-black uppercase tracking-widest text-slate-500 mb-8">Live Distribution</h3>
-              <div className="h-[300px]">
-                {categories.length > 0 ? (
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={categories.map(cat => ({
-                      name: cat,
-                      price: Math.min(...currentMarket.filter(i => i.category === cat).map(i => i.price))
-                    }))}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
-                      <XAxis dataKey="name" hide />
-                      <YAxis hide domain={[0, 'dataMax + 20']} />
-                      <Tooltip 
-                        contentStyle={{backgroundColor: '#0f172a', border: '1px solid #1e293b', borderRadius: '16px', fontSize: '10px', fontWeight: 'bold'}}
-                        cursor={{fill: 'rgba(79, 70, 229, 0.1)'}}
-                      />
-                      <Bar dataKey="price" radius={[8, 8, 0, 0]}>
-                        {categories.map((entry, index) => (
-                          <Cell key={`cell-${index}`} fill={index % 2 === 0 ? '#4f46e5' : '#818cf8'} />
-                        ))}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
-                ) : (
-                  <div className="h-full flex items-center justify-center italic text-xs text-slate-700">FEED INACTIVE</div>
-                )}
-              </div>
-            </div>
-
-            <div className="bg-slate-900/50 p-8 rounded-[2.5rem] border border-slate-800/60">
-              <div className="flex items-center gap-3 mb-6">
-                <Info size={18} className="text-indigo-400" />
-                <h3 className="text-xs font-black uppercase tracking-widest text-white">System Guide</h3>
-              </div>
-              <ul className="space-y-4">
-                <li className="flex gap-3 text-[11px] leading-relaxed">
-                  <span className="text-indigo-500 font-black">01</span>
-                  <span>Export your latest Expedia scraped data as a <b>CSV</b>.</span>
-                </li>
-                <li className="flex gap-3 text-[11px] leading-relaxed">
-                  <span className="text-indigo-500 font-black">02</span>
-                  <span>Upload using the <b>Import Feed</b> button above.</span>
-                </li>
-                <li className="flex gap-3 text-[11px] leading-relaxed">
-                  <span className="text-indigo-500 font-black">03</span>
-                  <span>Review <b>Target Rates</b> based on your selected undercut logic.</span>
-                </li>
-                <li className="flex gap-3 text-[11px] leading-relaxed">
-                  <span className="text-indigo-500 font-black">04</span>
-                  <span>Click <b>Sync Cloud</b> to push rates to your central database.</span>
-                </li>
-              </ul>
-            </div>
-          </div>
-        </div>
-      </main>
-    </div>
-  );
-}
+            tbody.innerHTML = html || '<tr><td colspan="6" class="p-12 text-center text-slate-500 italic">No data matched filter.</td></tr>';
+            document.getElementById('alertCount').innerText = updateAlerts;
+        }
+    </script>
+</body>
+</html>
