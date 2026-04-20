@@ -1,333 +1,281 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Rate Management Console - Expedia Intelligence</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/papaparse/5.3.2/papaparse.min.js"></script>
-    <style>
-        .card { background: rgba(255, 255, 255, 0.05); backdrop-filter: blur(10px); border: 1px solid rgba(255, 255, 255, 0.1); }
-        .input-field { background: #1e293b; border: 1px solid #334155; color: white; padding: 0.5rem; border-radius: 0.5rem; outline: none; }
-        .input-field:focus { border-color: #3b82f6; }
-    </style>
-</head>
-<body class="bg-slate-900 text-slate-100 min-h-screen font-sans">
+import React, { useState, useEffect, useMemo } from 'react';
+import { initializeApp } from 'firebase/app';
+import { 
+  getFirestore, 
+  doc, 
+  setDoc, 
+  onSnapshot 
+} from 'firebase/firestore';
+import { 
+  getAuth, 
+  signInAnonymously, 
+  signInWithCustomToken, 
+  onAuthStateChanged 
+} from 'firebase/auth';
+import { 
+  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
+  BarChart, Bar, Cell, Legend, PieChart, Pie
+} from 'recharts';
+import { 
+  Upload, DollarSign, Settings, AlertCircle, Save, 
+  RefreshCw, CheckCircle2, TrendingDown, Info
+} from 'lucide-react';
 
-    <!-- Header -->
-    <nav class="border-b border-slate-800 p-4 sticky top-0 bg-slate-900/80 backdrop-blur-md z-50">
-        <div class="max-w-7xl mx-auto flex justify-between items-center">
-            <div class="flex items-center gap-3">
-                <div class="p-2 bg-indigo-600 rounded-lg">
-                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
-                </div>
-                <div>
-                    <h1 class="text-xl font-bold tracking-tight">Rate Management Console</h1>
-                    <p class="text-xs text-slate-400">Competitive Price Positioning</p>
-                </div>
+// --- Firebase Configuration ---
+const getSafeConfig = () => {
+  try {
+    if (typeof __firebase_config !== 'undefined' && __firebase_config) return JSON.parse(__firebase_config);
+    return { apiKey: "preview", projectId: "preview" };
+  } catch (e) {
+    return { apiKey: "preview", projectId: "preview" };
+  }
+};
+
+const firebaseConfig = getSafeConfig();
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'expedia-price-manager';
+
+export default function App() {
+  const [user, setUser] = useState(null);
+  const [marketData, setMarketData] = useState([]);
+  const [myRates, setMyRates] = useState({});
+  const [strategy, setStrategy] = useState('undercut_min');
+  const [offset, setOffset] = useState(2);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [errorMsg, setErrorMsg] = useState(null);
+
+  // Auth initialization
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (err) { console.error("Auth error:", err); }
+    };
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      setLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Data Sync (Firestore)
+  useEffect(() => {
+    if (!user || firebaseConfig.apiKey === "preview") return;
+    const ratesDoc = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'current_rates');
+    const unsub = onSnapshot(ratesDoc, (snap) => {
+      if (snap.exists()) setMyRates(snap.data().rates || {});
+    }, (err) => console.error("Firestore error:", err));
+    return () => unsub();
+  }, [user]);
+
+  // Robust CSV Parser
+  const parseCSV = (text) => {
+    const lines = text.split(/\r?\n/).filter(l => l.trim());
+    if (lines.length < 2) return [];
+    const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, ''));
+    return lines.slice(1).map(line => {
+      const values = line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(v => v.trim().replace(/^"|"$/g, ''));
+      return headers.reduce((obj, h, i) => ({ ...obj, [h]: values[i] }), {});
+    });
+  };
+
+  const handleFileUpload = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const raw = parseCSV(event.target.result);
+        const processed = raw.map(row => ({
+          category: row['uitk-heading-5'] || row['category'] || 'Other',
+          price: parseFloat((row['uitk-text_10'] || row['uitk-text_8'] || '0').replace(/[^0-9.]/g, '')) || 0,
+          vendor: (row['title'] || '').match(/from (.*?) at/)?.[1] || 'Competitor'
+        })).filter(i => i.price > 0);
+        setMarketData(processed);
+      } catch (err) {
+        setErrorMsg("Failed to parse CSV. Check format.");
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const calculateTarget = (min, avg) => {
+    const off = parseFloat(offset) || 0;
+    switch(strategy) {
+      case 'undercut_min': return Math.max(0, min - off);
+      case 'match_min': return min;
+      case 'undercut_avg': return Math.max(0, avg - off);
+      case 'premium': return avg * 1.05;
+      default: return avg;
+    }
+  };
+
+  const categories = useMemo(() => [...new Set(marketData.map(d => d.category))], [marketData]);
+  
+  const chartData = useMemo(() => categories.map(cat => {
+    const group = marketData.filter(d => d.category === cat);
+    const avg = group.reduce((a, b) => a + b.price, 0) / group.length;
+    const min = Math.min(...group.map(d => d.price));
+    return { name: cat, Average: Math.round(avg), Recommended: Math.round(calculateTarget(min, avg)) };
+  }), [categories, marketData, strategy, offset]);
+
+  const stats = useMemo(() => {
+    if (!marketData.length) return { avg: 0, min: 0 };
+    const prices = marketData.map(d => d.price);
+    return {
+      avg: Math.round(prices.reduce((a,b) => a+b, 0) / prices.length),
+      min: Math.min(...prices)
+    };
+  }, [marketData]);
+
+  const handleSave = async () => {
+    if (!user || firebaseConfig.apiKey === "preview") return;
+    setSaving(true);
+    try {
+      const ratesDoc = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'current_rates');
+      await setDoc(ratesDoc, { rates: myRates, updated: new Date().toISOString() }, { merge: true });
+    } finally { setSaving(false); }
+  };
+
+  if (loading) return <div className="h-screen bg-slate-900 flex items-center justify-center"><RefreshCw className="animate-spin text-indigo-500" /></div>;
+
+  return (
+    <div className="min-h-screen bg-slate-900 text-slate-100 font-sans pb-20">
+      <nav className="border-b border-slate-800 p-4 sticky top-0 bg-slate-900/80 backdrop-blur-md z-50">
+        <div className="max-w-7xl mx-auto flex justify-between items-center">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-indigo-600 rounded-lg shadow-lg shadow-indigo-500/20">
+              <DollarSign className="w-6 h-6 text-white" />
             </div>
-            <div class="flex gap-4 items-center">
-                <input type="file" id="csvUpload" class="hidden" accept=".csv">
-                <button onclick="document.getElementById('csvUpload').click()" class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded-lg font-medium transition-all text-sm flex items-center gap-2">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
-                    Import Market Data
-                </button>
+            <div>
+              <h1 className="text-xl font-bold tracking-tight">Rate Management Console</h1>
+              <p className="text-xs text-slate-400">Competitive Price Positioning</p>
             </div>
+          </div>
+          <label className="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded-lg font-medium transition-all text-sm flex items-center gap-2 cursor-pointer">
+            <Upload size={16} /> Import Market Data
+            <input type="file" className="hidden" accept=".csv" onChange={handleFileUpload} />
+          </label>
         </div>
-    </nav>
+      </nav>
 
-    <main class="max-w-7xl mx-auto p-6 space-y-8">
-        
-        <!-- Rate Strategy Panel -->
-        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div class="lg:col-span-1 card p-6 rounded-2xl border-l-4 border-l-indigo-500">
-                <h2 class="text-lg font-bold mb-4 flex items-center gap-2">
-                    <svg class="w-5 h-5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path></svg>
-                    Price Strategy
-                </h2>
-                <div class="space-y-4">
-                    <div>
-                        <label class="block text-sm text-slate-400 mb-1">Positioning Logic</label>
-                        <select id="strategySelect" onchange="updateDashboard()" class="w-full input-field">
-                            <option value="undercut_min">Undercut Market Minimum</option>
-                            <option value="match_min">Match Market Minimum</option>
-                            <option value="undercut_avg">Undercut Market Average</option>
-                            <option value="premium">Premium (+5% Over Average)</option>
-                        </select>
-                    </div>
-                    <div>
-                        <label class="block text-sm text-slate-400 mb-1">Offset Amount (CA$)</label>
-                        <!-- Added step and fixed default value to prevent parsing warnings -->
-                        <input type="number" id="strategyOffset" value="2" step="1" oninput="updateDashboard()" class="w-full input-field">
-                    </div>
-                </div>
+      <main className="max-w-7xl mx-auto p-6 space-y-8">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div className="lg:col-span-1 bg-slate-800/50 p-6 rounded-2xl border border-slate-700/50 border-l-4 border-l-indigo-500">
+            <h2 className="text-lg font-bold mb-4 flex items-center gap-2"><Settings size={20} className="text-indigo-400" /> Price Strategy</h2>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-xs text-slate-400 uppercase font-bold mb-2">Positioning Logic</label>
+                <select value={strategy} onChange={e => setStrategy(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-sm outline-none focus:border-indigo-500">
+                  <option value="undercut_min">Undercut Market Minimum</option>
+                  <option value="match_min">Match Market Minimum</option>
+                  <option value="undercut_avg">Undercut Market Average</option>
+                  <option value="premium">Premium (+5% Over Average)</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs text-slate-400 uppercase font-bold mb-2">Offset Amount (CA$)</label>
+                <input type="number" value={offset} onChange={e => setOffset(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-sm outline-none focus:border-indigo-500" />
+              </div>
+              <button onClick={handleSave} className="w-full bg-slate-700 hover:bg-slate-600 py-2.5 rounded-lg text-sm font-bold flex items-center justify-center gap-2 transition-all">
+                {saving ? <RefreshCw className="animate-spin" size={16} /> : <Save size={16} />} Sync Changes
+              </button>
             </div>
+          </div>
 
-            <div class="lg:col-span-2 grid grid-cols-1 md:grid-cols-3 gap-4" id="statsContainer">
-                <div class="card p-6 rounded-2xl">
-                    <p class="text-slate-400 text-sm mb-1">Avg Market Rate</p>
-                    <h3 class="text-3xl font-bold" id="avgPrice">-</h3>
-                </div>
-                <div class="card p-6 rounded-2xl">
-                    <p class="text-slate-400 text-sm mb-1">Market Floor</p>
-                    <h3 class="text-3xl font-bold text-emerald-400" id="minPrice">-</h3>
-                </div>
-                <div class="card p-6 rounded-2xl border-t-4 border-t-yellow-500">
-                    <p class="text-slate-400 text-sm mb-1">Required Updates</p>
-                    <h3 class="text-3xl font-bold text-yellow-400" id="alertCount">0</h3>
-                </div>
+          <div className="lg:col-span-2 grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700/50">
+              <p className="text-slate-400 text-xs font-bold uppercase mb-1">Avg Market Rate</p>
+              <h3 className="text-3xl font-black">{stats.avg ? `CA $${stats.avg}` : '--'}</h3>
             </div>
+            <div className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700/50">
+              <p className="text-slate-400 text-xs font-bold uppercase mb-1">Market Floor</p>
+              <h3 className="text-3xl font-black text-emerald-400">{stats.min ? `CA $${stats.min}` : '--'}</h3>
+            </div>
+            <div className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700/50 border-t-4 border-t-yellow-500">
+              <p className="text-slate-400 text-xs font-bold uppercase mb-1">Required Updates</p>
+              <h3 className="text-3xl font-black text-yellow-400">{categories.filter(c => (myRates[c] || 0) > (calculateTarget(Math.min(...marketData.filter(d=>d.category===c).map(d=>d.price)), marketData.filter(d=>d.category===c).reduce((a,b)=>a+b.price,0)/marketData.filter(d=>d.category===c).length))).length}</h3>
+            </div>
+          </div>
         </div>
 
-        <!-- Charts Row -->
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <div class="card p-6 rounded-2xl">
-                <h2 class="text-lg font-semibold mb-4 text-slate-300">Category Comparison & Recommended Rates</h2>
-                <canvas id="categoryChart" height="200"></canvas>
-            </div>
-            <div class="card p-6 rounded-2xl overflow-hidden">
-                <h2 class="text-lg font-semibold mb-4 text-slate-300">Competitor Volume</h2>
-                <canvas id="distributionChart" height="200"></canvas>
-            </div>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700/50 h-[350px]">
+            <h2 className="text-sm font-bold uppercase text-slate-400 mb-6">Market vs Recommended</h2>
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={chartData}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
+                <XAxis dataKey="name" stroke="#94a3b8" fontSize={10} tickLine={false} axisLine={false} />
+                <YAxis stroke="#94a3b8" fontSize={10} tickLine={false} axisLine={false} />
+                <Tooltip contentStyle={{backgroundColor: '#1e293b', border: 'none', borderRadius: '8px'}} />
+                <Legend iconType="circle" wrapperStyle={{paddingTop: '20px'}} />
+                <Bar dataKey="Average" fill="#334155" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="Recommended" fill="#6366f1" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+          <div className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700/50 flex flex-col justify-center items-center">
+             <TrendingDown size={48} className="text-slate-700 mb-4" />
+             <p className="text-slate-500 text-sm font-bold uppercase tracking-widest text-center px-10">Pricing distribution insights and market volume comparison</p>
+          </div>
         </div>
 
-        <!-- Set Up Rates Table -->
-        <div class="space-y-4">
-            <div class="flex justify-between items-end">
-                <div>
-                    <h2 class="text-2xl font-bold">Rate Adjustment Workflow</h2>
-                    <p class="text-slate-400 text-sm">Compare current rates against market targets to set daily prices.</p>
-                </div>
-                <div class="flex gap-2">
-                    <select id="filterCategory" onchange="renderTable()" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1 text-sm outline-none">
-                        <option value="all">All Categories</option>
-                    </select>
-                </div>
-            </div>
+        <div className="space-y-4">
+          <h2 className="text-xl font-bold px-1">Rate Adjustment Workflow</h2>
+          <div className="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-800/20">
+            <table className="w-full text-left">
+              <thead className="bg-slate-800/50 text-slate-400 text-[10px] font-black uppercase tracking-widest">
+                <tr>
+                  <th className="p-4">Category</th>
+                  <th className="p-4">Market Avg</th>
+                  <th className="p-4">Market Min</th>
+                  <th className="p-4">Current Rate</th>
+                  <th className="p-4">Target Rate</th>
+                  <th className="p-4 text-right">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800">
+                {categories.length > 0 ? categories.map(cat => {
+                   const group = marketData.filter(d => d.category === cat);
+                   const avg = group.reduce((a,b)=>a+b.price,0)/group.length;
+                   const min = Math.min(...group.map(d=>d.price));
+                   const target = calculateTarget(min, avg);
+                   const current = myRates[cat] || 0;
+                   const needsUpdate = current > target;
 
-            <div class="overflow-x-auto rounded-2xl border border-slate-800">
-                <table class="w-full text-left border-collapse">
-                    <thead class="bg-slate-800 text-slate-400 text-sm uppercase tracking-wider">
-                        <tr>
-                            <th class="p-4 font-medium">Category</th>
-                            <th class="p-4 font-medium">Market Average</th>
-                            <th class="p-4 font-medium">Market Min</th>
-                            <th class="p-4 font-medium">Our Current Rate</th>
-                            <th class="p-4 font-medium">Target Rate</th>
-                            <th class="p-4 font-medium text-right">Action</th>
-                        </tr>
-                    </thead>
-                    <tbody id="rateTableBody">
-                        <tr>
-                            <td colspan="6" class="p-12 text-center text-slate-500 italic">
-                                <p class="text-lg">No Data Available</p>
-                                <p class="text-sm">Please upload a CSV export from Expedia to see market rates.</p>
-                            </td>
-                        </tr>
-                    </tbody>
-                </table>
-            </div>
+                   return (
+                     <tr key={cat} className="hover:bg-slate-800/30 transition-colors">
+                       <td className="p-4 font-bold text-slate-200">{cat}</td>
+                       <td className="p-4 text-slate-400 font-mono text-sm">${avg.toFixed(0)}</td>
+                       <td className="p-4 text-emerald-400 font-mono font-bold text-sm">${min}</td>
+                       <td className="p-4">
+                         <input type="number" value={current || ''} onChange={e => setMyRates({...myRates, [cat]: parseFloat(e.target.value)})}
+                           className={`w-24 bg-slate-900 border rounded px-3 py-1.5 text-sm font-bold outline-none ${needsUpdate ? 'border-yellow-500 text-yellow-500' : 'border-slate-700'}`} />
+                       </td>
+                       <td className="p-4 font-black text-indigo-400 text-lg">${target.toFixed(0)}</td>
+                       <td className="p-4 text-right">
+                         {needsUpdate ? (
+                           <button onClick={() => setMyRates({...myRates, [cat]: Math.round(target)})} className="bg-yellow-500/10 text-yellow-500 px-3 py-1 rounded text-[10px] font-black uppercase border border-yellow-500/20 hover:bg-yellow-500 hover:text-slate-900 transition-all">Match Target</button>
+                         ) : <span className="text-emerald-500 text-[10px] font-black uppercase flex items-center justify-end gap-1"><CheckCircle2 size={14} /> Optimized</span>}
+                       </td>
+                     </tr>
+                   );
+                }) : (
+                  <tr><td colSpan="6" className="p-20 text-center text-slate-600 font-bold uppercase tracking-widest text-xs italic">Upload CSV to initialize workspace</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
-    </main>
-
-    <script>
-        let marketData = [];
-        let myRates = {}; 
-        let charts = {};
-
-        // Added event listener to ensure script waits for DOM
-        window.onload = function() {
-            document.getElementById('csvUpload').addEventListener('change', function(e) {
-                const file = e.target.files[0];
-                if (!file) return;
-
-                Papa.parse(file, {
-                    header: true,
-                    skipEmptyLines: true,
-                    complete: function(results) {
-                        processData(results.data);
-                    }
-                });
-            });
-        };
-
-        function cleanPrice(priceStr) {
-            if (!priceStr) return 0;
-            return parseFloat(priceStr.replace(/[^0-9.]/g, '')) || 0;
-        }
-
-        function processData(data) {
-            marketData = data.map(row => {
-                const title = row['title'] || row['is-visually-hidden'] || '';
-                const vendorMatch = title.match(/from (.*?) at/);
-                const vendor = vendorMatch ? vendorMatch[1] : 'Unknown';
-                const price = cleanPrice(row['uitk-text_10'] || row['uitk-text_8']);
-                
-                return {
-                    category: row['uitk-heading-5'] || 'Other',
-                    vendor: vendor,
-                    price: price
-                };
-            }).filter(item => item.price > 0);
-
-            const categories = [...new Set(marketData.map(d => d.category))];
-            categories.forEach(cat => {
-                if (!myRates[cat]) myRates[cat] = 0;
-            });
-
-            updateDashboard();
-        }
-
-        function calculateTarget(catMin, catAvg) {
-            const strategy = document.getElementById('strategySelect').value;
-            const offsetInput = document.getElementById('strategyOffset');
-            const offset = parseFloat(offsetInput.value) || 0;
-            
-            switch(strategy) {
-                case 'undercut_min': return Math.max(1, catMin - offset);
-                case 'match_min': return catMin;
-                case 'undercut_avg': return Math.max(1, catAvg - offset);
-                case 'premium': return catAvg * 1.05;
-                default: return catAvg;
-            }
-        }
-
-        function updateMyRate(category, val) {
-            myRates[category] = parseFloat(val) || 0;
-            renderTable();
-            renderCharts(); 
-        }
-
-        function updateDashboard() {
-            if (marketData.length === 0) return;
-
-            const prices = marketData.map(d => d.price);
-            const avg = prices.reduce((a, b) => a + b, 0) / prices.length;
-            const min = Math.min(...prices);
-
-            document.getElementById('avgPrice').innerText = `CA $${avg.toFixed(0)}`;
-            document.getElementById('minPrice').innerText = `CA $${min.toFixed(0)}`;
-
-            const categories = [...new Set(marketData.map(d => d.category))];
-            const filter = document.getElementById('filterCategory');
-            const currentFilter = filter.value;
-            filter.innerHTML = '<option value="all">All Categories</option>' + 
-                categories.map(c => `<option value="${c}">${c}</option>`).join('');
-            filter.value = currentFilter || 'all';
-
-            renderCharts();
-            renderTable();
-        }
-
-        function renderCharts() {
-            const ctx1 = document.getElementById('categoryChart').getContext('2d');
-            const ctx2 = document.getElementById('distributionChart').getContext('2d');
-
-            if (charts.cat) charts.cat.destroy();
-            if (charts.dist) charts.dist.destroy();
-
-            const categories = [...new Set(marketData.map(d => d.category))];
-            const avgData = categories.map(cat => {
-                const vals = marketData.filter(d => d.category === cat).map(d => d.price);
-                return vals.reduce((a,b)=>a+b,0)/vals.length;
-            });
-
-            const targetData = categories.map(cat => {
-                const vals = marketData.filter(d => d.category === cat).map(d => d.price);
-                const min = Math.min(...vals);
-                const avg = vals.reduce((a,b)=>a+b,0)/vals.length;
-                return calculateTarget(min, avg);
-            });
-
-            charts.cat = new Chart(ctx1, {
-                type: 'bar',
-                data: {
-                    labels: categories,
-                    datasets: [
-                        { label: 'Market Average', data: avgData, backgroundColor: '#334155' },
-                        { label: 'Recommended Rate', data: targetData, backgroundColor: '#6366f1' }
-                    ]
-                },
-                options: {
-                    responsive: true,
-                    plugins: { legend: { labels: { color: '#94a3b8' } } },
-                    scales: { 
-                        y: { grid: { color: '#1e293b' }, ticks: { color: '#94a3b8' } },
-                        x: { ticks: { color: '#94a3b8' } }
-                    }
-                }
-            });
-
-            const vendorCounts = {};
-            marketData.forEach(d => vendorCounts[d.vendor] = (vendorCounts[d.vendor] || 0) + 1);
-            
-            charts.dist = new Chart(ctx2, {
-                type: 'doughnut',
-                data: {
-                    labels: Object.keys(vendorCounts),
-                    datasets: [{
-                        data: Object.values(vendorCounts),
-                        backgroundColor: ['#6366f1', '#8b5cf6', '#ec4899', '#f59e0b', '#10b981'],
-                        borderWidth: 0
-                    }]
-                },
-                options: { plugins: { legend: { position: 'right', labels: { color: '#94a3b8' } } } }
-            });
-        }
-
-        function renderTable() {
-            const tbody = document.getElementById('rateTableBody');
-            const filterVal = document.getElementById('filterCategory').value;
-            const categories = [...new Set(marketData.map(d => d.category))];
-            
-            let updateAlerts = 0;
-
-            const html = categories
-                .filter(cat => filterVal === 'all' || cat === filterVal)
-                .map(cat => {
-                    const group = marketData.filter(d => d.category === cat);
-                    const avg = group.reduce((a,b)=>a+b.price,0)/group.length;
-                    const min = Math.min(...group.map(d => d.price));
-                    const target = calculateTarget(min, avg);
-                    const current = myRates[cat] || 0;
-                    
-                    const isOutOfPosition = current > target;
-                    if (isOutOfPosition) updateAlerts++;
-
-                    return `
-                        <tr class="border-b border-slate-800 hover:bg-slate-800/30 transition-colors">
-                            <td class="p-4 font-bold text-slate-200">${cat}</td>
-                            <td class="p-4 text-slate-400 font-mono">CA$${avg.toFixed(2)}</td>
-                            <td class="p-4 text-emerald-400 font-mono font-bold">CA$${min.toFixed(2)}</td>
-                            <td class="p-4">
-                                <div class="relative">
-                                    <span class="absolute left-3 top-2 text-slate-500">CA$</span>
-                                    <input type="number" 
-                                           value="${current || ''}" 
-                                           placeholder="Set Rate"
-                                           onchange="updateMyRate('${cat}', this.value)"
-                                           class="w-32 bg-slate-800 border ${isOutOfPosition ? 'border-yellow-500' : 'border-slate-700'} rounded px-9 py-2 text-white text-sm outline-none focus:border-indigo-500">
-                                </div>
-                            </td>
-                            <td class="p-4">
-                                <div class="flex flex-col">
-                                    <span class="text-indigo-400 font-mono font-bold text-lg">CA$${target.toFixed(2)}</span>
-                                    <span class="text-[10px] text-slate-500 uppercase">Target Price</span>
-                                </div>
-                            </td>
-                            <td class="p-4 text-right">
-                                ${isOutOfPosition ? 
-                                    `<button onclick="updateMyRate('${cat}', ${target.toFixed(2)})" class="bg-yellow-500/10 text-yellow-500 px-3 py-1 rounded text-xs border border-yellow-500/20 hover:bg-yellow-500 hover:text-slate-900 font-bold transition-all">Match Target</button>` 
-                                    : `<span class="text-emerald-500 flex items-center justify-end gap-1 text-xs font-bold uppercase"><svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path></svg> Optimized</span>`}
-                            </td>
-                        </tr>
-                    `;
-                }).join('');
-
-            tbody.innerHTML = html || '<tr><td colspan="6" class="p-12 text-center text-slate-500 italic">No data matched filter.</td></tr>';
-            document.getElementById('alertCount').innerText = updateAlerts;
-        }
-    </script>
-</body>
-</html>
+      </main>
+    </div>
+  );
+}
