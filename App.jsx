@@ -17,26 +17,18 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
   AreaChart, Area
 } from 'recharts';
-import { Upload, TrendingUp, DollarSign, CheckCircle, Activity, MapPin, Truck, Download, AlertCircle } from 'lucide-react';
+import { Upload, TrendingUp, DollarSign, CheckCircle, Activity, MapPin, Truck, Download, AlertCircle, ChevronRight } from 'lucide-react';
 
-// --- Safe Configuration Handling ---
+// --- Configuration Setup ---
 const getSafeConfig = () => {
   try {
-    // Attempt to use environment variables if present
-    const config = typeof __firebase_config !== 'undefined' 
-      ? JSON.parse(__firebase_config) 
-      : JSON.parse(import.meta.env?.VITE_FIREBASE_CONFIG || '{}');
-    return config;
+    if (typeof __firebase_config !== 'undefined') return JSON.parse(__firebase_config);
+    if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_FIREBASE_CONFIG) {
+      return JSON.parse(import.meta.env.VITE_FIREBASE_CONFIG);
+    }
+    return { apiKey: "preview", projectId: "preview" };
   } catch (e) {
-    console.warn("Firebase config not found. Using placeholder for UI preview.");
-    return {
-      apiKey: "placeholder",
-      authDomain: "placeholder",
-      projectId: "placeholder",
-      storageBucket: "placeholder",
-      messagingSenderId: "placeholder",
-      appId: "placeholder"
-    };
+    return { apiKey: "preview", projectId: "preview" };
   }
 };
 
@@ -56,11 +48,10 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState(null);
   
-  // Filter States
   const [selectedLocation, setSelectedLocation] = useState('All Locations');
   const [fleetFilter, setFleetFilter] = useState([]);
 
-  // 1. Auth Logic (RULE 3)
+  // 1. Authentication Lifecycle
   useEffect(() => {
     const initAuth = async () => {
       try {
@@ -78,70 +69,51 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // 2. Data Fetching (RULE 1 & 2)
+  // 2. Real-time Market History
   useEffect(() => {
-    if (!user) return;
+    if (!user || firebaseConfig.apiKey === "preview") {
+      setLoading(false);
+      return;
+    }
     const historyCol = collection(db, 'artifacts', appId, 'public', 'data', 'price_history');
     const unsubscribe = onSnapshot(historyCol, (snapshot) => {
-      const data = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      }));
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setHistoricalData(data);
       setLoading(false);
-    }, (err) => {
-      console.error("Firestore error:", err);
-      setLoading(false);
-    });
+    }, () => setLoading(false));
     return () => unsubscribe();
   }, [user]);
 
-  const cleanPrice = (str) => {
-    if (!str) return 0;
-    const cleaned = str.replace(/[^0-9.]/g, '');
-    return parseFloat(cleaned) || 0;
-  };
-
-  // REPLACED: Custom CSV Parser to avoid "Papa is not defined" error
+  // 3. ZERO-DEPENDENCY CSV ENGINE
+  // This replaces PapaParse to fix the "Papa is not defined" error
   const parseCSV = (text) => {
-    try {
-      const lines = text.split(/\r?\n/).filter(line => line.trim() !== "");
-      if (lines.length < 2) return [];
+    const lines = text.split(/\r?\n/).filter(l => l.trim());
+    if (lines.length < 2) return [];
+    
+    const splitLine = (line) => {
+      const fields = [];
+      let cur = "";
+      let inQuotes = false;
+      for (let i = 0; i < line.length; i++) {
+        const c = line[i];
+        if (c === '"') inQuotes = !inQuotes;
+        else if (c === ',' && !inQuotes) {
+          fields.push(cur.trim().replace(/^"|"$/g, ''));
+          cur = "";
+        } else cur += c;
+      }
+      fields.push(cur.trim().replace(/^"|"$/g, ''));
+      return fields;
+    };
 
-      // Handle quoted CSV values correctly
-      const splitLine = (line) => {
-        const result = [];
-        let cur = "";
-        let inQuotes = false;
-        for (let i = 0; i < line.length; i++) {
-          const char = line[i];
-          if (char === '"') {
-            inQuotes = !inQuotes;
-          } else if (char === ',' && !inQuotes) {
-            result.push(cur.trim());
-            cur = "";
-          } else {
-            cur += char;
-          }
-        }
-        result.push(cur.trim());
-        return result.map(v => v.replace(/^"|"$/g, ''));
-      };
-
-      const headers = splitLine(lines[0]);
-      return lines.slice(1).map(line => {
-        const values = splitLine(line);
-        const row = {};
-        headers.forEach((header, i) => {
-          row[header] = values[i] || "";
-        });
-        return row;
-      });
-    } catch (e) {
-      console.error("Parse Error", e);
-      setErrorMsg("Failed to parse CSV format.");
-      return [];
-    }
+    const headers = splitLine(lines[0]);
+    return lines.slice(1).map(line => {
+      const values = splitLine(line);
+      return headers.reduce((obj, h, i) => {
+        obj[h] = values[i] || "";
+        return obj;
+      }, {});
+    });
   };
 
   const handleFileUpload = (e) => {
@@ -150,74 +122,40 @@ export default function App() {
     if (!file) return;
 
     const reader = new FileReader();
-    reader.onload = async (event) => {
-      const text = event.target.result;
-      const results = parseCSV(text);
-      
-      if (results.length === 0) {
-        setErrorMsg("No data found in CSV.");
-        return;
-      }
+    reader.onload = (event) => {
+      try {
+        const results = parseCSV(event.target.result);
+        const parsed = results.map(row => {
+          const title = row['title'] || row['is-visually-hidden'] || '';
+          const vendor = title.match(/from (.*?) at/)?.[1] || 'Unknown';
+          const link = row['_container_link'] || "";
+          const location = link.match(/locn=(.*?)&/)?.[1] 
+            ? decodeURIComponent(link.match(/locn=(.*?)&/)[1]).replace(/\+/g, ' ') 
+            : "Market Generic";
+          
+          const priceRaw = row['uitk-text_10'] || row['uitk-text_8'] || row['price'];
+          const price = parseFloat(priceRaw?.replace(/[^0-9.]/g, '')) || 0;
 
-      const parsed = results.map(row => {
-        const title = row['title'] || row['is-visually-hidden'] || '';
-        const vendorMatch = title.match(/from (.*?) at/);
-        const vendor = vendorMatch ? vendorMatch[1] : 'Unknown Provider';
-        
-        const link = row['_container_link'] || "";
-        const locMatch = link.match(/locn=(.*?)&/);
-        const location = locMatch ? decodeURIComponent(locMatch[1]).replace(/\+/g, ' ') : "Market Generic";
+          return {
+            category: row['uitk-heading-5'] || row['category'] || 'Other',
+            vendor,
+            price,
+            model: row['uitk-text'] || 'Similar Model',
+            location
+          };
+        }).filter(i => i.price > 0);
 
-        // Try multiple common Expedia Scraper headers
-        const priceRaw = row['uitk-text_10'] || row['uitk-text_8'] || row['uitk-text_7'] || row['price'];
-        const price = cleanPrice(priceRaw);
-        
-        return {
-          category: row['uitk-heading-5'] || row['category'] || 'Other',
-          vendor: vendor,
-          price: price,
-          model: row['uitk-text'] || row['model'] || 'Similar Model',
-          location: location
-        };
-      }).filter(i => i.price > 0);
-
-      if (parsed.length > 0) {
-        setCurrentMarket(parsed);
-        saveToHistory(parsed);
-        if (fleetFilter.length === 0) {
-          setFleetFilter([...new Set(parsed.map(p => p.category))]);
+        if (parsed.length > 0) {
+          setCurrentMarket(parsed);
+          if (fleetFilter.length === 0) setFleetFilter([...new Set(parsed.map(p => p.category))]);
+        } else {
+          setErrorMsg("CSV Parse Warning: No price data detected. Verify column headers.");
         }
-      } else {
-        setErrorMsg("CSV format recognized but no valid prices extracted. Check headers.");
+      } catch (err) {
+        setErrorMsg("Critical error reading file.");
       }
     };
     reader.readAsText(file);
-  };
-
-  const saveToHistory = async (data) => {
-    if (!user || firebaseConfig.apiKey === "placeholder") return;
-    const dateKey = new Date().toISOString().split('T')[0];
-    const categories = [...new Set(data.map(d => d.category))];
-    
-    const dailySummary = {
-      date: dateKey,
-      timestamp: Date.now(),
-      location: data[0]?.location || "Unknown",
-      categories: categories.map(cat => {
-        const catPrices = data.filter(d => d.category === cat).map(d => d.price);
-        return {
-          name: cat,
-          avg: catPrices.reduce((a,b) => a + b, 0) / catPrices.length,
-          min: Math.min(...catPrices)
-        };
-      })
-    };
-
-    try {
-      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'price_history', dateKey), dailySummary);
-    } catch (err) {
-      console.error("Save error", err);
-    }
   };
 
   const calculateTarget = (min, avg) => {
@@ -238,229 +176,121 @@ export default function App() {
     });
   }, [currentMarket, selectedLocation, fleetFilter]);
 
-  const availableLocations = useMemo(() => ['All Locations', ...new Set(currentMarket.map(d => d.location))], [currentMarket]);
-  const allPossibleCategories = useMemo(() => [...new Set(currentMarket.map(d => d.category))], [currentMarket]);
-
-  const trendChartData = useMemo(() => {
-    const sorted = [...historicalData].sort((a, b) => a.timestamp - b.timestamp);
-    return sorted.map(day => {
-      const entry = { date: day.date };
-      day.categories?.forEach(cat => {
-        if (fleetFilter.length === 0 || fleetFilter.includes(cat.name)) {
-          entry[cat.name] = cat.avg;
-        }
-      });
-      return entry;
-    });
-  }, [historicalData, fleetFilter]);
-
   const activeCategories = useMemo(() => [...new Set(filteredMarket.map(d => d.category))], [filteredMarket]);
 
-  const toggleFleetItem = (cat) => {
-    setFleetFilter(prev => prev.includes(cat) ? prev.filter(c => c !== cat) : [...prev, cat]);
-  };
-
-  const exportRateSheet = () => {
-    if (activeCategories.length === 0) return;
-    
-    let csv = "Category,Location,Market Min,Market Avg,My Current Rate,Target Rate,Action Required\n";
-    
-    activeCategories.forEach(cat => {
-      const group = filteredMarket.filter(d => d.category === cat);
-      const avg = group.reduce((a,b)=>a+b.price,0)/group.length;
-      const min = Math.min(...group.map(d => d.price));
-      const target = calculateTarget(min, avg);
-      const current = myRates[cat] || 0;
-      const action = current > target ? "LOWER RATE" : "COMPETITIVE";
-      
-      csv += `"${cat}","${selectedLocation}",${min.toFixed(2)},${avg.toFixed(2)},${current.toFixed(2)},${target.toFixed(2)},${action}\n`;
-    });
-
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.setAttribute('hidden', '');
-    a.setAttribute('href', url);
-    a.setAttribute('download', `Rate_Sheet_${selectedLocation}_${new Date().toISOString().split('T')[0]}.csv`);
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-  };
-
-  if (loading && firebaseConfig.apiKey !== "placeholder") return (
-    <div className="min-h-screen bg-slate-950 flex items-center justify-center font-sans text-white">
-      <div className="text-center space-y-4">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-500 mx-auto"></div>
-        <p className="text-slate-400 font-medium">Syncing Fleet Intelligence...</p>
+  if (loading && firebaseConfig.apiKey !== "preview") {
+    return (
+      <div className="min-h-screen bg-[#020408] flex items-center justify-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-blue-500"></div>
       </div>
-    </div>
-  );
+    );
+  }
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 p-4 md:p-8 font-sans">
-      <div className="max-w-7xl mx-auto space-y-8">
+    <div className="min-h-screen bg-[#020408] text-slate-200 font-sans p-4 md:p-8">
+      <div className="max-w-7xl mx-auto space-y-6">
         
         {errorMsg && (
-          <div className="bg-red-500/10 border border-red-500/50 p-4 rounded-2xl flex items-center gap-3 text-red-400 animate-in fade-in slide-in-from-top-4">
-            <AlertCircle size={20} />
-            <span className="text-sm font-bold">{errorMsg}</span>
-            <button onClick={() => setErrorMsg(null)} className="ml-auto text-xs underline">Dismiss</button>
+          <div className="bg-red-500/10 border border-red-500/50 p-4 rounded-xl flex items-center gap-3 text-red-400 text-sm font-bold animate-in slide-in-from-top">
+            <AlertCircle size={18} /> {errorMsg}
           </div>
         )}
 
-        <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 border-b border-slate-800 pb-8">
+        <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 border-b border-slate-800/50 pb-8">
           <div>
-            <div className="flex items-center gap-3 mb-1">
-              <div className="bg-indigo-500 p-1.5 rounded-lg shadow-lg shadow-indigo-500/20">
-                <Activity size={20} className="text-white" />
+            <div className="flex items-center gap-3 mb-2">
+              <div className="bg-blue-600 p-2 rounded-lg shadow-lg shadow-blue-500/20">
+                <Activity size={24} className="text-white" />
               </div>
-              <h1 className="text-3xl font-black tracking-tight text-white">Rate Manager</h1>
+              <h1 className="text-2xl font-black tracking-tight text-white uppercase italic">Market Intel v2</h1>
             </div>
-            <p className="text-slate-400 text-sm flex items-center gap-2">
-              <MapPin size={14} className="text-indigo-400" /> 
-              {selectedLocation} • {activeCategories.length} Active Categories
+            <p className="text-slate-500 text-[10px] font-black tracking-[0.2em] uppercase flex items-center gap-2">
+              <MapPin size={12} className="text-blue-500" /> {selectedLocation}
             </p>
           </div>
           <div className="flex gap-3 w-full md:w-auto">
-            <input type="file" id="upload" className="hidden" onChange={handleFileUpload} accept=".csv" />
+            <input type="file" id="csv-input" className="hidden" onChange={handleFileUpload} accept=".csv" />
             <button 
-              onClick={() => document.getElementById('upload').click()}
-              className="w-full md:w-auto bg-indigo-600 hover:bg-indigo-500 text-white px-8 py-3 rounded-2xl font-bold flex items-center justify-center gap-2 transition-all shadow-xl shadow-indigo-500/20"
+              onClick={() => document.getElementById('csv-input').click()}
+              className="w-full md:w-auto bg-white hover:bg-slate-200 text-black px-8 py-3 rounded-xl font-black text-xs flex items-center justify-center gap-2 transition-all"
             >
-              <Upload size={20} /> Update Market Data
+              <Upload size={16} /> UPLOAD EXPEDIA CSV
             </button>
           </div>
         </header>
 
-        <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
           <aside className="space-y-6">
-            <div className="bg-slate-900 rounded-3xl p-6 border border-slate-800 shadow-xl">
-              <h3 className="font-bold text-sm uppercase tracking-widest text-slate-500 mb-4 flex items-center gap-2">
-                <MapPin size={16} /> Pickup Location
-              </h3>
+            <div className="bg-[#0b0e14] rounded-2xl p-6 border border-slate-800/50">
+              <h3 className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-4">Location</h3>
               <select 
-                className="w-full bg-slate-950 border border-slate-700 p-3 rounded-xl outline-none focus:ring-2 ring-indigo-500/50 text-sm"
-                value={selectedLocation}
+                className="w-full bg-black border border-slate-800 p-3 rounded-lg text-xs font-bold text-slate-300 outline-none"
                 onChange={(e) => setSelectedLocation(e.target.value)}
               >
-                {availableLocations.map(loc => <option key={loc} value={loc}>{loc}</option>)}
+                <option value="All Locations">Global Market</option>
+                {[...new Set(currentMarket.map(d => d.location))].map(l => <option key={l} value={l}>{l}</option>)}
               </select>
             </div>
 
-            <div className="bg-slate-900 rounded-3xl p-6 border border-slate-800 shadow-xl">
-              <h3 className="font-bold text-sm uppercase tracking-widest text-slate-500 mb-4 flex items-center gap-2">
-                <Truck size={16} /> My Fleet Filter
-              </h3>
-              <div className="space-y-2 max-h-64 overflow-y-auto pr-2 custom-scrollbar">
-                {allPossibleCategories.length === 0 && <p className="text-xs text-slate-600 italic">No categories detected yet.</p>}
-                {allPossibleCategories.map(cat => (
-                  <label key={cat} className="flex items-center gap-3 p-2 rounded-lg hover:bg-slate-800 cursor-pointer transition-colors group">
-                    <input 
-                      type="checkbox" 
-                      checked={fleetFilter.includes(cat)}
-                      onChange={() => toggleFleetItem(cat)}
-                      className="w-4 h-4 rounded border-slate-700 bg-slate-950 text-indigo-500 focus:ring-indigo-500"
-                    />
-                    <span className={`text-xs font-bold ${fleetFilter.includes(cat) ? 'text-slate-200' : 'text-slate-500'}`}>{cat}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
-
-            <div className="bg-indigo-600/10 rounded-3xl p-6 border border-indigo-500/20">
-              <h3 className="font-bold text-sm text-indigo-400 mb-4 flex items-center gap-2">
-                <DollarSign size={16} /> Strategy
-              </h3>
+            <div className="bg-[#0b0e14] rounded-2xl p-6 border border-slate-800/50">
+              <h3 className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-4">Pricing Control</h3>
               <div className="space-y-4">
-                <select 
-                  className="w-full bg-slate-950 border border-slate-700 p-3 rounded-xl outline-none text-xs font-bold"
-                  value={strategy}
-                  onChange={(e) => setStrategy(e.target.value)}
-                >
-                  <option value="undercut_min">Undercut Floor</option>
-                  <option value="match_min">Match Floor</option>
-                  <option value="undercut_avg">Undercut Avg</option>
-                  <option value="premium">Premium (+5%)</option>
-                </select>
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-slate-500 font-bold">$</span>
+                <div className="space-y-1">
+                  <span className="text-[9px] font-black text-slate-600 uppercase">Logic</span>
+                  <select 
+                    className="w-full bg-black border border-slate-800 p-3 rounded-lg text-[11px] font-black text-blue-400 outline-none"
+                    value={strategy}
+                    onChange={(e) => setStrategy(e.target.value)}
+                  >
+                    <option value="undercut_min">Undercut Floor</option>
+                    <option value="match_min">Match Floor</option>
+                    <option value="undercut_avg">Undercut Average</option>
+                    <option value="premium">Premium Position</option>
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <span className="text-[9px] font-black text-slate-600 uppercase">$ Margin</span>
                   <input 
                     type="number" 
-                    className="w-full bg-slate-950 border border-slate-700 p-3 rounded-xl text-xs"
+                    className="w-full bg-black border border-slate-800 p-3 rounded-lg text-xs font-bold text-white"
                     value={offset}
                     onChange={(e) => setOffset(Number(e.target.value))}
-                    placeholder="Offset CA$"
                   />
                 </div>
               </div>
             </div>
           </aside>
 
-          <div className="lg:col-span-3 space-y-8">
-            <section className="bg-slate-900 rounded-[2rem] p-8 border border-slate-800 shadow-2xl">
-              <h2 className="text-xl font-bold mb-8 flex items-center gap-3">
-                <TrendingUp size={20} className="text-indigo-400" /> 30-Day Fleet Price Trends
-              </h2>
-              <div className="h-64 w-full">
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={trendChartData}>
-                    <defs>
-                      <linearGradient id="colorPrice" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#6366f1" stopOpacity={0.2}/>
-                        <stop offset="95%" stopColor="#6366f1" stopOpacity={0}/>
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
-                    <XAxis dataKey="date" stroke="#475569" fontSize={10} />
-                    <YAxis stroke="#475569" fontSize={10} />
-                    <Tooltip contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #334155', borderRadius: '16px' }} />
-                    {fleetFilter.slice(0, 5).map((cat, idx) => (
-                      <Area 
-                        key={cat} 
-                        type="monotone" 
-                        dataKey={cat} 
-                        stroke={['#6366f1', '#ec4899', '#f59e0b', '#10b981', '#06b6d4'][idx % 5]} 
-                        fill="url(#colorPrice)"
-                        strokeWidth={3}
-                      />
-                    ))}
-                  </AreaChart>
-                </ResponsiveContainer>
-              </div>
-            </section>
-
-            <section className="bg-slate-900 rounded-[2rem] border border-slate-800 overflow-hidden shadow-2xl">
-              <div className="p-8 border-b border-slate-800 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-                <div>
-                  <h2 className="text-xl font-bold">Rate Setup Workflow</h2>
-                  <p className="text-xs text-slate-500 mt-1 uppercase tracking-widest font-bold">Managing {activeCategories.length} Categories</p>
-                </div>
+          <div className="lg:col-span-3">
+            <div className="bg-[#0b0e14] rounded-3xl border border-slate-800/50 overflow-hidden shadow-2xl">
+              <div className="p-6 border-b border-slate-800/50 flex justify-between items-center bg-white/[0.01]">
+                <h2 className="text-[11px] font-black uppercase tracking-[0.2em] text-slate-500">Live Rate Analysis</h2>
                 <button 
-                  onClick={exportRateSheet}
-                  disabled={activeCategories.length === 0}
-                  className="bg-slate-800 hover:bg-slate-700 text-indigo-400 px-5 py-2.5 rounded-xl text-xs font-black transition-all flex items-center gap-2 border border-slate-700 disabled:opacity-50 shadow-lg shadow-indigo-500/5"
+                  className="text-[10px] font-black bg-blue-500/10 text-blue-400 px-4 py-1.5 rounded-full border border-blue-500/20"
                 >
-                  <Download size={14} /> Export Rate Sheet
+                  {activeCategories.length} Categories
                 </button>
               </div>
+              
               <div className="overflow-x-auto">
-                <table className="w-full text-left">
-                  <thead className="bg-slate-800/30 text-slate-500 text-[10px] uppercase font-black tracking-widest">
+                <table className="w-full text-left border-collapse">
+                  <thead className="text-[9px] uppercase font-black text-slate-600 border-b border-slate-800/50">
                     <tr>
-                      <th className="p-8">Fleet Category</th>
-                      <th className="p-8">Expedia Context</th>
-                      <th className="p-8">Your Rate</th>
-                      <th className="p-8">Target</th>
-                      <th className="p-8 text-right">Action</th>
+                      <th className="p-6">Category</th>
+                      <th className="p-6">Market Pulse</th>
+                      <th className="p-6">Our Current</th>
+                      <th className="p-6">Recommendation</th>
+                      <th className="p-6 text-right">Action</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-800/50">
+                  <tbody className="divide-y divide-slate-800/30">
                     {activeCategories.length === 0 && (
                       <tr>
-                        <td colSpan="5" className="p-20 text-center text-slate-500">
-                          <Upload className="mx-auto mb-4 opacity-20" size={48} />
-                          <p className="text-sm font-bold">No market data imported.</p>
-                          <p className="text-xs">Upload an Expedia CSV to begin analysis.</p>
+                        <td colSpan="5" className="p-32 text-center">
+                          <div className="flex flex-col items-center gap-4 opacity-30">
+                            <Upload size={48} />
+                            <p className="text-[10px] font-black uppercase tracking-widest">Awaiting CSV Upload</p>
+                          </div>
                         </td>
                       </tr>
                     )}
@@ -473,51 +303,45 @@ export default function App() {
                       const isHigh = current > target;
 
                       return (
-                        <tr key={cat} className="hover:bg-slate-800/20 transition-all">
-                          <td className="p-8">
-                            <span className="text-lg font-bold text-white block">{cat}</span>
-                            <span className="text-xs text-slate-500">{group[0]?.model}</span>
+                        <tr key={cat} className="hover:bg-white/[0.01] transition-all group">
+                          <td className="p-6">
+                            <span className="text-sm font-black text-white block group-hover:text-blue-500 transition-colors">{cat}</span>
+                            <span className="text-[10px] font-bold text-slate-600 uppercase italic leading-none">{group[0]?.model}</span>
                           </td>
-                          <td className="p-8">
-                            <div className="space-y-1">
-                              <div className="flex items-center gap-3 text-xs">
-                                <span className="w-8 text-slate-500">Min</span>
-                                <span className="text-emerald-400 font-black">CA${min.toFixed(0)}</span>
-                              </div>
-                              <div className="flex items-center gap-3 text-xs">
-                                <span className="w-8 text-slate-500">Avg</span>
-                                <span className="text-slate-400 font-black">CA${avg.toFixed(0)}</span>
-                              </div>
+                          <td className="p-6">
+                            <div className="flex flex-col gap-1">
+                              <span className="text-[11px] font-black text-emerald-500 leading-none">MIN ${min.toFixed(0)}</span>
+                              <span className="text-[10px] font-bold text-slate-500 leading-none">AVG ${avg.toFixed(0)}</span>
                             </div>
                           </td>
-                          <td className="p-8">
-                            <div className="relative max-w-[120px]">
-                              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-600 font-bold">$</span>
+                          <td className="p-6">
+                            <div className="relative w-24">
+                              <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-700 font-bold text-xs">$</span>
                               <input 
                                 type="number"
-                                className={`w-full bg-slate-950 border ${isHigh ? 'border-orange-500 ring-2 ring-orange-500/10' : 'border-slate-700'} rounded-xl py-2 px-7 font-black text-white outline-none`}
+                                className={`w-full bg-black border ${isHigh ? 'border-orange-500/40 ring-1 ring-orange-500/10' : 'border-slate-800'} rounded-lg py-2 pl-5 pr-2 text-white font-black text-xs outline-none focus:border-blue-500 transition-all`}
                                 value={current || ''}
                                 onChange={(e) => setMyRates({...myRates, [cat]: parseFloat(e.target.value)})}
                               />
                             </div>
                           </td>
-                          <td className="p-8">
+                          <td className="p-6">
                             <div className="flex flex-col">
-                              <span className="text-indigo-400 text-xl font-black">CA${target.toFixed(0)}</span>
-                              <span className="text-[10px] text-slate-500 uppercase font-black">Target</span>
+                              <span className="text-blue-400 text-xl font-black tracking-tight leading-none">${target.toFixed(0)}</span>
+                              <span className="text-[9px] font-black text-slate-700 uppercase mt-1 tracking-tighter">Target Rate</span>
                             </div>
                           </td>
-                          <td className="p-8 text-right">
+                          <td className="p-6 text-right">
                             {isHigh ? (
                               <button 
                                 onClick={() => setMyRates({...myRates, [cat]: target})}
-                                className="bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded-xl text-[10px] font-black transition-all shadow-lg shadow-orange-500/20"
+                                className="bg-orange-500 hover:bg-orange-600 text-white px-5 py-2 rounded-lg text-[10px] font-black shadow-lg shadow-orange-500/10 transition-all active:scale-95"
                               >
-                                MATCH
+                                ADJUST
                               </button>
                             ) : (
-                              <div className="text-emerald-500 flex items-center justify-end gap-1 font-black text-[10px]">
-                                <CheckCircle size={14} /> OK
+                              <div className="text-emerald-500/60 text-[10px] font-black flex items-center justify-end gap-1">
+                                <CheckCircle size={14} /> READY
                               </div>
                             )}
                           </td>
@@ -527,7 +351,7 @@ export default function App() {
                   </tbody>
                 </table>
               </div>
-            </section>
+            </div>
           </div>
         </div>
       </div>
