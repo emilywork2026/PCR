@@ -1,334 +1,188 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Rate Management Console - Expedia Intelligence</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/papaparse/5.3.2/papaparse.min.js"></script>
-    <style>
-        .card { background: rgba(255, 255, 255, 0.05); backdrop-filter: blur(10px); border: 1px solid rgba(255, 255, 255, 0.1); }
-        .input-field { background: #1e293b; border: 1px solid #334155; color: white; padding: 0.5rem; border-radius: 0.5rem; outline: none; }
-        .input-field:focus { border-color: #3b82f6; }
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pacific Car Rentals — Rate Intelligence</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    body { font-family: 'DM Sans', sans-serif; }
+    .mono { font-family: 'DM Mono', monospace; }
+    .card { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; }
+    .input-dark { background: #0f172a; border: 1px solid #1e293b; color: white; padding: 0.5rem 0.75rem; border-radius: 8px; outline: none; width: 100%; font-family: 'DM Mono', monospace; }
+    .input-dark:focus { border-color: #6366f1; }
+    .tab-btn { padding: 6px 16px; border-radius: 8px; font-size: 13px; font-weight: 500; cursor: pointer; border: 1px solid rgba(255,255,255,0.1); color: #94a3b8; background: transparent; transition: all .15s; }
+    .tab-btn.active { background: rgba(99,102,241,0.15); color: #a5b4fc; border-color: rgba(99,102,241,0.4); }
+    .tab-btn:hover { border-color: rgba(255,255,255,0.2); color: #e2e8f0; }
+    .brand-pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 500; }
+    .toast { position: fixed; bottom: 24px; right: 24px; background: #1e293b; border: 1px solid #334155; border-radius: 10px; padding: 10px 20px; font-size: 13px; font-weight: 500; color: #e2e8f0; opacity: 0; transform: translateY(8px); transition: all .2s; pointer-events: none; z-index: 100; }
+    .toast.show { opacity: 1; transform: translateY(0); }
+    .trend-up { color: #f87171; font-size: 12px; }
+    .trend-down { color: #34d399; font-size: 12px; }
+    .stat-card { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); border-radius: 12px; padding: 20px; }
+  </style>
 </head>
-<body class="bg-slate-900 text-slate-100 min-h-screen font-sans">
+<body class="bg-slate-950 text-slate-100 min-h-screen">
 
-    <!-- Header -->
-    <nav class="border-b border-slate-800 p-4 sticky top-0 bg-slate-900/80 backdrop-blur-md z-50">
-        <div class="max-w-7xl mx-auto flex justify-between items-center">
-            <div class="flex items-center gap-3">
-                <div class="p-2 bg-indigo-600 rounded-lg">
-                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
-                </div>
-                <div>
-                    <h1 class="text-xl font-bold tracking-tight">Rate Management Console</h1>
-                    <p class="text-xs text-slate-400">Competitive Price Positioning</p>
-                </div>
-            </div>
-            <div class="flex gap-4 items-center">
-                <input type="file" id="csvUpload" class="hidden" accept=".csv">
-                <button onclick="document.getElementById('csvUpload').click()" class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded-lg font-medium transition-all text-sm flex items-center gap-2">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
-                    Import Market Data
-                </button>
-            </div>
+  <!-- Nav -->
+  <nav class="border-b border-slate-800 px-6 py-4 sticky top-0 bg-slate-950/90 backdrop-blur z-50">
+    <div class="max-w-6xl mx-auto flex justify-between items-center">
+      <div class="flex items-center gap-3">
+        <div class="w-9 h-9 bg-indigo-600 rounded-lg flex items-center justify-center text-white font-bold text-sm">PCR</div>
+        <div>
+          <div class="font-semibold text-base leading-tight">Pacific Car Rentals</div>
+          <div class="text-xs text-slate-500">Expedia Rate Intelligence</div>
         </div>
-    </nav>
+      </div>
+      <div class="flex gap-2">
+        <button onclick="showTab('capture')" id="btn-capture" class="tab-btn active">Saturday capture</button>
+        <button onclick="showTab('analyze')" id="btn-analyze" class="tab-btn">Analyze</button>
+        <button onclick="showTab('strategy')" id="btn-strategy" class="tab-btn">Rate strategy</button>
+      </div>
+    </div>
+  </nav>
 
-    <main class="max-w-7xl mx-auto p-6 space-y-8">
-        
-        <!-- Rate Strategy Panel -->
-        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div class="lg:col-span-1 card p-6 rounded-2xl border-l-4 border-l-indigo-500">
-                <h2 class="text-lg font-bold mb-4 flex items-center gap-2">
-                    <svg class="w-5 h-5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path></svg>
-                    Price Strategy
-                </h2>
-                <div class="space-y-4">
-                    <div>
-                        <label class="block text-sm text-slate-400 mb-1">Positioning Logic</label>
-                        <select id="strategySelect" onchange="updateDashboard()" class="w-full input-field">
-                            <option value="undercut_min">Undercut Market Minimum</option>
-                            <option value="match_min">Match Market Minimum</option>
-                            <option value="undercut_avg">Undercut Market Average</option>
-                            <option value="premium">Premium (+5% Over Average)</option>
-                        </select>
-                    </div>
-                    <div>
-                        <label class="block text-sm text-slate-400 mb-1">Offset Amount (CA$)</label>
-                        <!-- Added step and fixed default value to prevent parsing warnings -->
-                        <input type="number" id="strategyOffset" value="2" step="1" oninput="updateDashboard()" class="w-full input-field">
-                    </div>
-                </div>
-            </div>
+  <main class="max-w-6xl mx-auto px-6 py-8 space-y-6">
 
-            <div class="lg:col-span-2 grid grid-cols-1 md:grid-cols-3 gap-4" id="statsContainer">
-                <div class="card p-6 rounded-2xl">
-                    <p class="text-slate-400 text-sm mb-1">Avg Market Rate</p>
-                    <h3 class="text-3xl font-bold" id="avgPrice">-</h3>
-                </div>
-                <div class="card p-6 rounded-2xl">
-                    <p class="text-slate-400 text-sm mb-1">Market Floor</p>
-                    <h3 class="text-3xl font-bold text-emerald-400" id="minPrice">-</h3>
-                </div>
-                <div class="card p-6 rounded-2xl border-t-4 border-t-yellow-500">
-                    <p class="text-slate-400 text-sm mb-1">Required Updates</p>
-                    <h3 class="text-3xl font-bold text-yellow-400" id="alertCount">0</h3>
-                </div>
-            </div>
+    <!-- ── TAB: CAPTURE ── -->
+    <div id="tab-capture">
+      <div class="flex items-baseline justify-between mb-6">
+        <div>
+          <h2 class="text-xl font-semibold">Saturday rate capture</h2>
+          <p class="text-sm text-slate-500 mt-1">Log this Saturday's before-tax daily rates from Expedia. Takes ~60 seconds.</p>
         </div>
+        <div id="capture-date" class="text-sm text-slate-500 mono"></div>
+      </div>
 
-        <!-- Charts Row -->
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <div class="card p-6 rounded-2xl">
-                <h2 class="text-lg font-semibold mb-4 text-slate-300">Category Comparison & Recommended Rates</h2>
-                <canvas id="categoryChart" height="200"></canvas>
-            </div>
-            <div class="card p-6 rounded-2xl overflow-hidden">
-                <h2 class="text-lg font-semibold mb-4 text-slate-300">Competitor Volume</h2>
-                <canvas id="distributionChart" height="200"></canvas>
-            </div>
+      <!-- Step 1: Links -->
+      <div class="card p-5 mb-4">
+        <div class="flex items-center gap-3 mb-4">
+          <div class="w-6 h-6 rounded-full bg-slate-800 border border-slate-600 flex items-center justify-center text-xs font-medium text-slate-400">1</div>
+          <span class="text-sm text-slate-400">Open Expedia — same car class (intermediate), same Saturday dates</span>
         </div>
+        <div class="flex gap-2 flex-wrap" id="expedia-links"></div>
+      </div>
 
-        <!-- Set Up Rates Table -->
-        <div class="space-y-4">
-            <div class="flex justify-between items-end">
-                <div>
-                    <h2 class="text-2xl font-bold">Rate Adjustment Workflow</h2>
-                    <p class="text-slate-400 text-sm">Compare current rates against market targets to set daily prices.</p>
-                </div>
-                <div class="flex gap-2">
-                    <select id="filterCategory" onchange="renderTable()" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1 text-sm outline-none">
-                        <option value="all">All Categories</option>
-                    </select>
-                </div>
-            </div>
-
-            <div class="overflow-x-auto rounded-2xl border border-slate-800">
-                <table class="w-full text-left border-collapse">
-                    <thead class="bg-slate-800 text-slate-400 text-sm uppercase tracking-wider">
-                        <tr>
-                            <th class="p-4 font-medium">Category</th>
-                            <th class="p-4 font-medium">Market Average</th>
-                            <th class="p-4 font-medium">Market Min</th>
-                            <th class="p-4 font-medium">Our Current Rate</th>
-                            <th class="p-4 font-medium">Target Rate</th>
-                            <th class="p-4 font-medium text-right">Action</th>
-                        </tr>
-                    </thead>
-                    <tbody id="rateTableBody">
-                        <tr>
-                            <td colspan="6" class="p-12 text-center text-slate-500 italic">
-                                <p class="text-lg">No Data Available</p>
-                                <p class="text-sm">Please upload a CSV export from Expedia to see market rates.</p>
-                            </td>
-                        </tr>
-                    </tbody>
-                </table>
-            </div>
+      <!-- Step 2: Entry -->
+      <div class="card p-5 mb-4">
+        <div class="flex items-center gap-3 mb-5">
+          <div class="w-6 h-6 rounded-full bg-slate-800 border border-slate-600 flex items-center justify-center text-xs font-medium text-slate-400">2</div>
+          <span class="text-sm text-slate-400">Enter before-tax daily rate for each brand</span>
         </div>
-    </main>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3" id="brand-inputs"></div>
+        <div id="live-stats" class="grid grid-cols-2 md:grid-cols-4 gap-3 mt-5 pt-5 border-t border-slate-800"></div>
+        <button onclick="saveEntry()" class="mt-5 w-full py-3 bg-indigo-600 hover:bg-indigo-500 active:scale-99 rounded-xl font-medium text-sm transition-all">Save this Saturday's rates</button>
+      </div>
 
-    <script>
-        let marketData = [];
-        let myRates = {}; 
-        let charts = {};
+      <!-- Step 3: Recommendation -->
+      <div class="card p-5 mb-4" id="rec-card">
+        <div class="flex items-center gap-3 mb-4">
+          <div class="w-6 h-6 rounded-full bg-slate-800 border border-slate-600 flex items-center justify-center text-xs font-medium text-slate-400">3</div>
+          <span class="text-sm text-slate-400">Recommended PCR rate for this Saturday</span>
+        </div>
+        <div id="rec-content" class="text-sm text-slate-500">Enter rates above to see recommendation.</div>
+      </div>
 
-        // Added event listener to ensure script waits for DOM
-        window.onload = function() {
-            document.getElementById('csvUpload').addEventListener('change', function(e) {
-                const file = e.target.files[0];
-                if (!file) return;
+      <!-- History -->
+      <div class="card p-5">
+        <div class="text-sm font-medium text-slate-300 mb-4">Rate history — Saturdays</div>
+        <div id="history-table" class="overflow-x-auto"></div>
+      </div>
+    </div>
 
-                Papa.parse(file, {
-                    header: true,
-                    skipEmptyLines: true,
-                    complete: function(results) {
-                        processData(results.data);
-                    }
-                });
-            });
-        };
+    <!-- ── TAB: ANALYZE ── -->
+    <div id="tab-analyze" class="hidden">
+      <div class="mb-6">
+        <h2 class="text-xl font-semibold">3-month analysis</h2>
+        <p class="text-sm text-slate-500 mt-1">Trends and brand comparisons across all saved Saturdays.</p>
+      </div>
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6" id="analyze-stats"></div>
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+        <div class="card p-5">
+          <div class="text-sm font-medium text-slate-400 mb-4">Weekly trend — all brands</div>
+          <div style="position:relative;height:240px"><canvas id="trendChart" role="img" aria-label="Line chart of weekly Saturday rates for all competitor brands"></canvas></div>
+        </div>
+        <div class="card p-5">
+          <div class="text-sm font-medium text-slate-400 mb-4">13-week average by brand</div>
+          <div style="position:relative;height:240px"><canvas id="avgChart" role="img" aria-label="Bar chart of average rates per brand over 13 weeks"></canvas></div>
+        </div>
+      </div>
+      <div class="card p-5">
+        <div class="text-sm font-medium text-slate-400 mb-4">Week-by-week breakdown</div>
+        <div id="breakdown-table" class="overflow-x-auto"></div>
+      </div>
+    </div>
 
-        function cleanPrice(priceStr) {
-            if (!priceStr) return 0;
-            return parseFloat(priceStr.replace(/[^0-9.]/g, '')) || 0;
-        }
+    <!-- ── TAB: STRATEGY ── -->
+    <div id="tab-strategy" class="hidden">
+      <div class="mb-6">
+        <h2 class="text-xl font-semibold">Rate strategy</h2>
+        <p class="text-sm text-slate-500 mt-1">Set your positioning logic and get a recommended PCR rate for each week.</p>
+      </div>
 
-        function processData(data) {
-            marketData = data.map(row => {
-                const title = row['title'] || row['is-visually-hidden'] || '';
-                const vendorMatch = title.match(/from (.*?) at/);
-                const vendor = vendorMatch ? vendorMatch[1] : 'Unknown';
-                const price = cleanPrice(row['uitk-text_10'] || row['uitk-text_8']);
-                
-                return {
-                    category: row['uitk-heading-5'] || 'Other',
-                    vendor: vendor,
-                    price: price
-                };
-            }).filter(item => item.price > 0);
+      <!-- Strategy controls -->
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+        <div class="card p-5 border-l-4 border-l-indigo-500">
+          <div class="text-sm font-medium text-slate-300 mb-4">Positioning logic</div>
+          <div class="space-y-3">
+            <div>
+              <label class="text-xs text-slate-500 mb-1 block">Strategy</label>
+              <select id="strategySelect" onchange="renderStrategy()" class="input-dark text-sm">
+                <option value="undercut_avg">Undercut market average</option>
+                <option value="undercut_min">Undercut market minimum</option>
+                <option value="match_min">Match market minimum</option>
+                <option value="premium">Premium (+5% over average)</option>
+              </select>
+            </div>
+            <div>
+              <label class="text-xs text-slate-500 mb-1 block">Offset (CA$)</label>
+              <input type="number" id="strategyOffset" value="2" step="0.5" oninput="renderStrategy()" class="input-dark text-sm">
+            </div>
+          </div>
+        </div>
+        <div class="lg:col-span-2 grid grid-cols-3 gap-3" id="strategy-stats"></div>
+      </div>
 
-            const categories = [...new Set(marketData.map(d => d.category))];
-            categories.forEach(cat => {
-                if (!myRates[cat]) myRates[cat] = 0;
-            });
+      <!-- Strategy chart -->
+      <div class="card p-5 mb-6">
+        <div class="text-sm font-medium text-slate-400 mb-4">Market average vs. recommended PCR rate — by week</div>
+        <div style="position:relative;height:260px"><canvas id="strategyChart" role="img" aria-label="Bar chart comparing market average and recommended PCR rate per week"></canvas></div>
+      </div>
 
-            updateDashboard();
-        }
+      <!-- Rate adjustment table -->
+      <div class="card overflow-hidden">
+        <div class="p-5 border-b border-slate-800 flex items-center justify-between">
+          <div>
+            <div class="font-medium text-slate-200">Rate adjustment workflow</div>
+            <div class="text-xs text-slate-500 mt-0.5">Set your current PCR rate per week and see if it needs updating</div>
+          </div>
+          <div id="alert-badge" class="text-xs font-semibold px-3 py-1 rounded-full bg-yellow-500/10 text-yellow-400 border border-yellow-500/20"></div>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-sm">
+            <thead class="bg-slate-900 text-slate-500 text-xs uppercase tracking-wider">
+              <tr>
+                <th class="px-5 py-3">Saturday</th>
+                <th class="px-5 py-3">Market avg</th>
+                <th class="px-5 py-3">Market min</th>
+                <th class="px-5 py-3">Your current rate</th>
+                <th class="px-5 py-3">Target rate</th>
+                <th class="px-5 py-3 text-right">Status</th>
+              </tr>
+            </thead>
+            <tbody id="strategy-table"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
 
-        function calculateTarget(catMin, catAvg) {
-            const strategy = document.getElementById('strategySelect').value;
-            const offsetInput = document.getElementById('strategyOffset');
-            const offset = parseFloat(offsetInput.value) || 0;
-            
-            switch(strategy) {
-                case 'undercut_min': return Math.max(1, catMin - offset);
-                case 'match_min': return catMin;
-                case 'undercut_avg': return Math.max(1, catAvg - offset);
-                case 'premium': return catAvg * 1.05;
-                default: return catAvg;
-            }
-        }
+  </main>
 
-        function updateMyRate(category, val) {
-            myRates[category] = parseFloat(val) || 0;
-            renderTable();
-            renderCharts(); 
-        }
+  <div class="toast" id="toast">Saved!</div>
 
-        function updateDashboard() {
-            if (marketData.length === 0) return;
-
-            const prices = marketData.map(d => d.price);
-            const avg = prices.reduce((a, b) => a + b, 0) / prices.length;
-            const min = Math.min(...prices);
-
-            document.getElementById('avgPrice').innerText = `CA $${avg.toFixed(0)}`;
-            document.getElementById('minPrice').innerText = `CA $${min.toFixed(0)}`;
-
-            const categories = [...new Set(marketData.map(d => d.category))];
-            const filter = document.getElementById('filterCategory');
-            const currentFilter = filter.value;
-            filter.innerHTML = '<option value="all">All Categories</option>' + 
-                categories.map(c => `<option value="${c}">${c}</option>`).join('');
-            filter.value = currentFilter || 'all';
-
-            renderCharts();
-            renderTable();
-        }
-
-        function renderCharts() {
-            const ctx1 = document.getElementById('categoryChart').getContext('2d');
-            const ctx2 = document.getElementById('distributionChart').getContext('2d');
-
-            if (charts.cat) charts.cat.destroy();
-            if (charts.dist) charts.dist.destroy();
-
-            const categories = [...new Set(marketData.map(d => d.category))];
-            const avgData = categories.map(cat => {
-                const vals = marketData.filter(d => d.category === cat).map(d => d.price);
-                return vals.reduce((a,b)=>a+b,0)/vals.length;
-            });
-
-            const targetData = categories.map(cat => {
-                const vals = marketData.filter(d => d.category === cat).map(d => d.price);
-                const min = Math.min(...vals);
-                const avg = vals.reduce((a,b)=>a+b,0)/vals.length;
-                return calculateTarget(min, avg);
-            });
-
-            charts.cat = new Chart(ctx1, {
-                type: 'bar',
-                data: {
-                    labels: categories,
-                    datasets: [
-                        { label: 'Market Average', data: avgData, backgroundColor: '#334155' },
-                        { label: 'Recommended Rate', data: targetData, backgroundColor: '#6366f1' }
-                    ]
-                },
-                options: {
-                    responsive: true,
-                    plugins: { legend: { labels: { color: '#94a3b8' } } },
-                    scales: { 
-                        y: { grid: { color: '#1e293b' }, ticks: { color: '#94a3b8' } },
-                        x: { ticks: { color: '#94a3b8' } }
-                    }
-                }
-            });
-
-            const vendorCounts = {};
-            marketData.forEach(d => vendorCounts[d.vendor] = (vendorCounts[d.vendor] || 0) + 1);
-            
-            charts.dist = new Chart(ctx2, {
-                type: 'doughnut',
-                data: {
-                    labels: Object.keys(vendorCounts),
-                    datasets: [{
-                        data: Object.values(vendorCounts),
-                        backgroundColor: ['#6366f1', '#8b5cf6', '#ec4899', '#f59e0b', '#10b981'],
-                        borderWidth: 0
-                    }]
-                },
-                options: { plugins: { legend: { position: 'right', labels: { color: '#94a3b8' } } } }
-            });
-        }
-
-        function renderTable() {
-            const tbody = document.getElementById('rateTableBody');
-            const filterVal = document.getElementById('filterCategory').value;
-            const categories = [...new Set(marketData.map(d => d.category))];
-            
-            let updateAlerts = 0;
-
-            const html = categories
-                .filter(cat => filterVal === 'all' || cat === filterVal)
-                .map(cat => {
-                    const group = marketData.filter(d => d.category === cat);
-                    const avg = group.reduce((a,b)=>a+b.price,0)/group.length;
-                    const min = Math.min(...group.map(d => d.price));
-                    const target = calculateTarget(min, avg);
-                    const current = myRates[cat] || 0;
-                    
-                    const isOutOfPosition = current > target;
-                    if (isOutOfPosition) updateAlerts++;
-
-                    return `
-                        <tr class="border-b border-slate-800 hover:bg-slate-800/30 transition-colors">
-                            <td class="p-4 font-bold text-slate-200">${cat}</td>
-                            <td class="p-4 text-slate-400 font-mono">CA$${avg.toFixed(2)}</td>
-                            <td class="p-4 text-emerald-400 font-mono font-bold">CA$${min.toFixed(2)}</td>
-                            <td class="p-4">
-                                <div class="relative">
-                                    <span class="absolute left-3 top-2 text-slate-500">CA$</span>
-                                    <input type="number" 
-                                           value="${current || ''}" 
-                                           placeholder="Set Rate"
-                                           onchange="updateMyRate('${cat}', this.value)"
-                                           class="w-32 bg-slate-800 border ${isOutOfPosition ? 'border-yellow-500' : 'border-slate-700'} rounded px-9 py-2 text-white text-sm outline-none focus:border-indigo-500">
-                                </div>
-                            </td>
-                            <td class="p-4">
-                                <div class="flex flex-col">
-                                    <span class="text-indigo-400 font-mono font-bold text-lg">CA$${target.toFixed(2)}</span>
-                                    <span class="text-[10px] text-slate-500 uppercase">Target Price</span>
-                                </div>
-                            </td>
-                            <td class="p-4 text-right">
-                                ${isOutOfPosition ? 
-                                    `<button onclick="updateMyRate('${cat}', ${target.toFixed(2)})" class="bg-yellow-500/10 text-yellow-500 px-3 py-1 rounded text-xs border border-yellow-500/20 hover:bg-yellow-500 hover:text-slate-900 font-bold transition-all">Match Target</button>` 
-                                    : `<span class="text-emerald-500 flex items-center justify-end gap-1 text-xs font-bold uppercase"><svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path></svg> Optimized</span>`}
-                            </td>
-                        </tr>
-                    `;
-                }).join('');
-
-            tbody.innerHTML = html || '<tr><td colspan="6" class="p-12 text-center text-slate-500 italic">No data matched filter.</td></tr>';
-            document.getElementById('alertCount').innerText = updateAlerts;
-        }
-    </script>
+  <script src="app.js"></script>
 </body>
 </html>
